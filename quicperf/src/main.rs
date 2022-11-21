@@ -43,8 +43,8 @@ mod protocol;
 use std::net::SocketAddr;
 
 const USAGE: &'static str = "
-Usage: quicperf server -l <local_addr>
-       quicperf client [options] (-l <local_addr>)... -c <peer_addr>
+Usage: quicperf server (-l <local_addr>)...
+       quicperf client (-l <local_addr>)... (-c <peer_addr>)...
        quicperf -h | --help
 ";
 
@@ -63,19 +63,22 @@ fn main() {
         .filter_map(|a| a.parse().ok())
         .collect();
 
+    let peer_addrs: Vec<SocketAddr> = args
+        .get_vec("<peer_addr>")
+        .into_iter()
+        .filter_map(|a| a.parse().ok())
+        .collect();
+
     info!("local_addrs={:?}", local_addrs);
-    info!("peer_addr={}", args.get_str("<peer_addr>"));
+    info!("peer_addrs={:?}", peer_addrs);
 
     if args.get_bool("server") {
         info!("is server");
-        server::listen(local_addrs[0]);
-    }
-    if args.get_bool("client") {
+        server::listen(local_addrs);
+    } else if args.get_bool("client") {
         info!("is client");
-
-        let peer_addr: SocketAddr = args.get_str("<peer_addr>").parse().unwrap();
         
-        match client::connect(local_addrs, peer_addr) {
+        match client::connect(local_addrs, peer_addrs) {
             Err(client::ClientError::HandshakeFail) => std::process::exit(-1),
 
             // Err(client::ClientError::HttpFail) => std::process::exit(-2),

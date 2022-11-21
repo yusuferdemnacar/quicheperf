@@ -6,7 +6,7 @@ use ring::rand::*;
 use std::collections::HashMap;
 use slab::Slab;
 
-pub fn connect(local_addrs: Vec<SocketAddr>, peer_addr: SocketAddr) -> Result<(), ClientError> {
+pub fn connect(local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>) -> Result<(), ClientError> {
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
@@ -59,7 +59,7 @@ pub fn connect(local_addrs: Vec<SocketAddr>, peer_addr: SocketAddr) -> Result<()
         None,
         &scid,
         local_addr,
-        peer_addr,
+        peer_addrs[0],
         &mut config,
     )
     .unwrap();
@@ -85,7 +85,7 @@ pub fn connect(local_addrs: Vec<SocketAddr>, peer_addr: SocketAddr) -> Result<()
         }
     }
 
-    info!("connecting to {:} from {:} with scid {:?}", peer_addr, local_addr, scid);
+    info!("connecting to {:} from {:} with scid {:?}", peer_addrs[0], local_addr, scid);
 
     let (write, send_info) = conn.send(&mut out).expect("initial send failed");
     let token = src_addrs[&send_info.from];
@@ -149,7 +149,7 @@ pub fn connect(local_addrs: Vec<SocketAddr>, peer_addr: SocketAddr) -> Result<()
                     },
                 };
 
-                trace!("{}: got {} bytes", local_addr, len);
+                trace!("{}->{}: got {} bytes", from, local_addr, len);
 
                 let recv_info = quiche::RecvInfo {
                     to: local_addr,
@@ -249,17 +249,21 @@ pub fn connect(local_addrs: Vec<SocketAddr>, peer_addr: SocketAddr) -> Result<()
 
     if probed_paths < addrs.len() {
         trace!("probed_path={}, addrs={:?}", probed_paths, addrs);
-        let probe_addr = addrs[probed_paths];
+        let local_probe_addr = addrs[probed_paths];
+        let peer_probe_addr = peer_addrs[probed_paths];
         if conn.available_dcids() > 0 {
-            match conn.probe_path(addrs[probed_paths], peer_addr) {
+            match conn.probe_path(local_probe_addr, peer_probe_addr) {
                 Ok(v) => {
-                    info!("Successffully started probing for path from {:} with dcid {}", probe_addr, v);
+                    info!("{:}->{:} Successfully started probing for path with dcid {}",
+                        local_probe_addr, peer_probe_addr, v);
                     probed_paths += 1;
                 },
-                Err(e) => error!("Failed probing path from {:}: {}", probe_addr, e),
+                Err(e) => error!("{:}->{:} Failed probing path from: {}",
+                    local_probe_addr, peer_probe_addr, e),
             }
         } else {
-            warn!("Failed to probe path from {:}. No DCID available.", probe_addr);
+            warn!("{:}->{:} Failed to probe path: No DCID available.",
+                local_probe_addr, peer_probe_addr);
         }
     }
 
