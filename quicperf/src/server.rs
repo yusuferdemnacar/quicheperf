@@ -326,13 +326,11 @@ pub fn listen(local_addr: SocketAddr) {
         continue_write = false;
         for client in clients.values_mut() {
             // Reduce max_send_burst by 25% if loss is increasing more than 0.1%.
-            let loss_rate =
-                client.conn.stats().lost as f64 / client.conn.stats().sent as f64;
+            let loss_rate = client.conn.stats().lost as f64 / client.conn.stats().sent as f64;
             if loss_rate > client.loss_rate + 0.001 {
                 client.max_send_burst = client.max_send_burst / 4 * 3;
                 // Minimun bound of 10xMSS.
-                client.max_send_burst =
-                    client.max_send_burst.max(client.max_datagram_size * 10);
+                client.max_send_burst = client.max_send_burst.max(client.max_datagram_size * 10);
                 client.loss_rate = loss_rate;
             }
 
@@ -341,27 +339,37 @@ pub fn listen(local_addr: SocketAddr) {
                     client.max_datagram_size *
                     client.max_datagram_size;
             let mut total_write = 0;
-            let mut dst_info = None;
+            let mut dst_info: Option<quiche::SendInfo> = None;
 
             while total_write < max_send_burst {
-                let (write, send_info) = match client
-                    .conn
-                    .send(&mut out[total_write..max_send_burst])
-                {
+                let res = match dst_info {
+                    Some(info) => client.conn.send_on_path(
+                        &mut out[total_write..max_send_burst],
+                        Some(info.from),
+                        Some(info.to),
+                    ),
+                    None =>
+                        client.conn.send(&mut out[total_write..max_send_burst]),
+                };
+                
+                let (write, send_info) = match res {
                     Ok(v) => v,
 
                     Err(quiche::Error::Done) => {
-                        trace!("{} done writing", client.conn.trace_id());
+                        continue_write = dst_info.is_some();
+                        trace!("conn.send: {} done writing", client.conn.trace_id());
                         break;
                     },
 
                     Err(e) => {
-                        error!("{} send failed: {:?}", client.conn.trace_id(), e);
+                        error!("{} conn.send failed: {:?}", client.conn.trace_id(), e);
 
                         client.conn.close(false, 0x1, b"fail").ok();
                         break;
                     },
                 };
+
+                trace!("conn.send: wrote {} bytes from {:} to {:}", write, send_info.from, send_info.to);
 
                 total_write += write;
 
@@ -394,6 +402,11 @@ pub fn listen(local_addr: SocketAddr) {
             }
 
             trace!("{} written {} bytes", client.conn.trace_id(), total_write);
+            
+            if continue_write {
+                trace!("{} pause writing and consider another path", client.conn.trace_id());
+                break;
+            }
 
             if total_write >= max_send_burst {
                 trace!("{} pause writing", client.conn.trace_id(),);
@@ -404,8 +417,6 @@ pub fn listen(local_addr: SocketAddr) {
 
         // Garbage collect closed connections.
         clients.retain(|_, ref mut c| {
-            trace!("Collecting garbage");
-
             if c.conn.is_closed() {
                 info!(
                     "{} connection collected {:?} {:?}",

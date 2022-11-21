@@ -63,6 +63,7 @@ fn main() {
         .filter_map(|a| a.parse().ok())
         .collect();
 
+    info!("local_addrs={:?}", local_addrs);
     info!("peer_addr={}", args.get_str("<peer_addr>"));
 
     if args.get_bool("server") {
