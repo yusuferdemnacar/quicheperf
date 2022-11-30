@@ -1,6 +1,7 @@
 use crate::common::*;
 use crate::protocol::Protocol;
 use crate::protocol::TestConfig;
+use crate::ui;
 
 use ring::rand::*;
 use slab::Slab;
@@ -12,6 +13,9 @@ pub fn connect(
 ) -> Result<(), ClientError> {
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
+
+    let mut ui = ui::UI::new();
+    ui.new_test(&local_addrs, &peer_addrs, &tc);
 
     let mut sockets = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
     let mut src_addrs = HashMap::new();
@@ -119,8 +123,11 @@ pub fn connect(
 
     loop {
         if !conn.is_in_early_data() || protocol.is_some() {
-            poll.poll(&mut events, conn.timeout()).unwrap();
+            let timeout = std::cmp::min(conn.timeout(), ui.timeout());
+            poll.poll(&mut events, timeout).unwrap();
         }
+
+        ui.update(&conn);
 
         // If the event loop reported no events, it means that the timeout
         // has expired, so handle it without attempting to read packets. We

@@ -47,7 +47,7 @@ impl Protocol {
         if duration > std::time::Duration::ZERO {
             return;
         }
-        info!(
+        debug!(
             "Closing connection after {:?} because --duration={:?} passed",
             self.start.unwrap().elapsed(),
             self.tc.unwrap().duration
@@ -126,7 +126,7 @@ impl Protocol {
     }
 
     pub fn send_data(&mut self, conn: &mut Connection) -> quiche::Result<()> {
-        warn!("sending data");
+        trace!("sending data");
         loop {
             let written = match conn.stream_send(0, &SEND_DATA, false) {
                 Ok(v) => v,

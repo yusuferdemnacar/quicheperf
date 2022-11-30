@@ -39,8 +39,11 @@ mod common;
 mod protocol;
 mod sendto;
 mod server;
+mod ui;
 
 use std::net::SocketAddr;
+use std::process::exit;
+use std::process::{self,};
 use std::time::Duration;
 
 use crate::protocol::TestConfig;
@@ -74,7 +77,6 @@ fn main() {
         .filter_map(|a| a.parse().ok())
         .collect();
 
-    info!("local_addrs={:?}", local_addrs);
     info!("peer_addrs={:?}", peer_addrs);
 
     if args.get_bool("server") {
@@ -82,6 +84,11 @@ fn main() {
         server::listen(local_addrs);
     } else if args.get_bool("client") {
         info!("is client");
+
+        if local_addrs.len() != peer_addrs.len() {
+            println!("Same number of local and peer addresses expected. One path will be created per pair.");
+            exit(1);
+        }
 
         let duration = args.get_str("--duration").parse::<u64>().unwrap();
 
@@ -91,7 +98,7 @@ fn main() {
         };
 
         match client::connect(local_addrs, peer_addrs, tc) {
-            Err(client::ClientError::HandshakeFail) => std::process::exit(-1),
+            Err(client::ClientError::HandshakeFail) => process::exit(-1),
 
             // Err(client::ClientError::HttpFail) => std::process::exit(-2),
             Err(client::ClientError::Other(e)) => panic!("{}", e),
