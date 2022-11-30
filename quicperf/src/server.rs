@@ -5,8 +5,8 @@ use crate::protocol::Protocol;
 use super::common::*;
 use super::sendto;
 use ring::rand::*;
-use std::collections::HashMap;
 use slab::Slab;
+use std::collections::HashMap;
 
 use quiche::ConnectionId;
 
@@ -22,7 +22,6 @@ struct Client {
     // partial_requests: std::collections::HashMap<u64, PartialRequest>,
 
     // partial_responses: std::collections::HashMap<u64, PartialResponse>,
-
     max_datagram_size: usize,
 
     loss_rate: f64,
@@ -99,7 +98,6 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
 
         poll.poll(&mut events, timeout).unwrap();
 
-
         // If the event loop reported no events, it means that the timeout
         // has expired, so handle it without attempting to read packets. We
         // will then proceed with the send loop.
@@ -135,7 +133,10 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
                 let pkt_buf = &mut buf[..len];
 
                 // Parse the QUIC packet's header.
-                let hdr = match quiche::Header::from_slice(pkt_buf, quiche::MAX_CONN_ID_LEN) {
+                let hdr = match quiche::Header::from_slice(
+                    pkt_buf,
+                    quiche::MAX_CONN_ID_LEN,
+                ) {
                     Ok(v) => v,
                     Err(e) => {
                         error!("Parsing packet header failed: {:?}", e);
@@ -149,8 +150,9 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
                 let conn_id = &conn_id.as_ref()[..quiche::MAX_CONN_ID_LEN];
                 let conn_id = conn_id.to_vec().into();
 
-                // Lookup a connection based on the packet's connection ID. If there
-                // is no connection matching, create a new one.
+                // Lookup a connection based on the packet's connection ID. If
+                // there is no connection matching, create a new
+                // one.
                 let client = if !clients_ids.contains_key(&hdr.dcid) &&
                     !clients_ids.contains_key(&conn_id)
                 {
@@ -162,9 +164,10 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
                     if !quiche::version_is_supported(hdr.version) {
                         warn!("Doing version negotiation");
 
-                        let len =
-                            quiche::negotiate_version(&hdr.scid, &hdr.dcid, &mut out)
-                                .unwrap();
+                        let len = quiche::negotiate_version(
+                            &hdr.scid, &hdr.dcid, &mut out,
+                        )
+                        .unwrap();
 
                         let out = &out[..len];
 
@@ -237,7 +240,6 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
                     next_client_id += 1;
 
                     clients.get_mut(&client_id).unwrap()
-
                 } else {
                     let cid = match clients_ids.get(&hdr.dcid) {
                         Some(v) => v,
@@ -264,19 +266,24 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
                 };
 
                 trace!("{} processed {} bytes", client.conn.trace_id(), read);
-                
+
                 // Create a new application protocol session as soon as the QUIC
                 // connection is established.
-                if client.protocol.is_none() && (client.conn.is_in_early_data() || client.conn.is_established()) {
+                if client.protocol.is_none() &&
+                    (client.conn.is_in_early_data() ||
+                        client.conn.is_established())
+                {
                     // At this stage the ALPN negotiation succeeded and selected a
-                    // single application protocol name. We'll use this to construct
-                    // the correct type of HttpConn but `application_proto()`
+                    // single application protocol name. We'll use this to
+                    // construct the correct type of HttpConn
+                    // but `application_proto()`
                     // returns a slice, so we have to convert it to a str in order
                     // to compare to our lists of protocols. We `unwrap()` because
-                    // we need the value and if something fails at this stage, there
-                    // is not much anyone can do to recover.
+                    // we need the value and if something fails at this stage,
+                    // there is not much anyone can do to
+                    // recover.
                     let app_proto = client.conn.application_proto();
-                
+
                     if QUICPERF_ALPN.contains(&app_proto) {
                         info!("Connection established. Selecting QUICPERF protocol.");
                         client.protocol = Some(Protocol::new())
@@ -286,16 +293,23 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
                 }
 
                 // Update max_datagram_size after connection established.
-                client.max_datagram_size = client.conn.max_send_udp_payload_size();
+                client.max_datagram_size =
+                    client.conn.max_send_udp_payload_size();
 
                 // TODO: handle quicperf requests
                 if client.protocol.is_some() {
                     let protocol = client.protocol.as_mut().unwrap();
                     if !protocol.config_acked {
-                        if protocol.recv_config(&mut client.conn, &mut buf).is_err() {
+                        if protocol
+                            .recv_config(&mut client.conn, &mut buf)
+                            .is_err()
+                        {
                             continue 'read;
                         }
-                    } else if protocol.recv_data(&mut client.conn, &mut buf).is_err() {
+                    } else if protocol
+                        .recv_data(&mut client.conn, &mut buf)
+                        .is_err()
+                    {
                         continue 'read;
                     }
                 }
@@ -330,11 +344,13 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
         continue_write = false;
         for client in clients.values_mut() {
             // Reduce max_send_burst by 25% if loss is increasing more than 0.1%.
-            let loss_rate = client.conn.stats().lost as f64 / client.conn.stats().sent as f64;
+            let loss_rate =
+                client.conn.stats().lost as f64 / client.conn.stats().sent as f64;
             if loss_rate > client.loss_rate + 0.001 {
                 client.max_send_burst = client.max_send_burst / 4 * 3;
                 // Minimun bound of 10xMSS.
-                client.max_send_burst = client.max_send_burst.max(client.max_datagram_size * 10);
+                client.max_send_burst =
+                    client.max_send_burst.max(client.max_datagram_size * 10);
                 client.loss_rate = loss_rate;
             }
 
@@ -355,25 +371,37 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
                     None =>
                         client.conn.send(&mut out[total_write..max_send_burst]),
                 };
-                
+
                 let (write, send_info) = match res {
                     Ok(v) => v,
 
                     Err(quiche::Error::Done) => {
                         continue_write = dst_info.is_some();
-                        trace!("conn.send: {} done writing", client.conn.trace_id());
+                        trace!(
+                            "conn.send: {} done writing",
+                            client.conn.trace_id()
+                        );
                         break;
                     },
 
                     Err(e) => {
-                        error!("{} conn.send failed: {:?}", client.conn.trace_id(), e);
+                        error!(
+                            "{} conn.send failed: {:?}",
+                            client.conn.trace_id(),
+                            e
+                        );
 
                         client.conn.close(false, 0x1, b"fail").ok();
                         break;
                     },
                 };
 
-                trace!("{:}->{:} conn.send: wrote {} bytes", send_info.from, send_info.to, write);
+                trace!(
+                    "{:}->{:} conn.send: wrote {} bytes",
+                    send_info.from,
+                    send_info.to,
+                    write
+                );
 
                 total_write += write;
 
@@ -409,10 +437,18 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
                 panic!("send_to() failed: {:?}", e);
             }
 
-            trace!("{:}->{:} written {} bytes", dst_info.from, dst_info.to, total_write);
-            
+            trace!(
+                "{:}->{:} written {} bytes",
+                dst_info.from,
+                dst_info.to,
+                total_write
+            );
+
             if continue_write {
-                trace!("{} pause writing and consider another path", client.conn.trace_id());
+                trace!(
+                    "{} pause writing and consider another path",
+                    client.conn.trace_id()
+                );
                 break;
             }
 

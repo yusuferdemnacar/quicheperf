@@ -1,6 +1,6 @@
-use std::io;
 use ring::rand::SecureRandom;
 use std::fs::File;
+use std::io;
 
 pub const MAX_BUF_SIZE: usize = 65507;
 
@@ -64,8 +64,16 @@ pub fn generate_cid_and_reset_token<T: SecureRandom>(
 pub fn make_config() -> quiche::Config {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
-    config.load_cert_chain_from_pem_file("/home/cech/Research/MPQUIC/quiche/quicperf/src/cert.crt").unwrap();
-    config.load_priv_key_from_pem_file("/home/cech/Research/MPQUIC/quiche/quicperf/src/cert.key").unwrap();
+    config
+        .load_cert_chain_from_pem_file(
+            "/home/cech/Research/MPQUIC/quiche/quicperf/src/cert.crt",
+        )
+        .unwrap();
+    config
+        .load_priv_key_from_pem_file(
+            "/home/cech/Research/MPQUIC/quiche/quicperf/src/cert.key",
+        )
+        .unwrap();
 
     config.set_application_protos(&QUICPERF_ALPN).unwrap();
 
@@ -73,7 +81,7 @@ pub fn make_config() -> quiche::Config {
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_initial_max_data(100 * 10_000_000);
-    let max_stream_data= 10 * 16_777_216;
+    let max_stream_data = 10 * 16_777_216;
     config.set_initial_max_stream_data_bidi_local(max_stream_data);
     config.set_initial_max_stream_data_bidi_remote(max_stream_data);
     config.set_initial_max_stream_data_uni(max_stream_data);

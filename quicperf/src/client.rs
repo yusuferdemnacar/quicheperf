@@ -1,12 +1,15 @@
-use crate::protocol::{Protocol, TestConfig};
 use crate::common::*;
+use crate::protocol::Protocol;
+use crate::protocol::TestConfig;
 
-use std::net::SocketAddr;
 use ring::rand::*;
-use std::collections::HashMap;
 use slab::Slab;
+use std::collections::HashMap;
+use std::net::SocketAddr;
 
-pub fn connect(local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: TestConfig) -> Result<(), ClientError> {
+pub fn connect(
+    local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: TestConfig,
+) -> Result<(), ClientError> {
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
@@ -55,14 +58,9 @@ pub fn connect(local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: Te
     let scid = quiche::ConnectionId::from_ref(&scid);
 
     // Create a QUIC connection and initiate handshake.
-    let mut conn = quiche::connect(
-        None,
-        &scid,
-        local_addr,
-        peer_addrs[0],
-        &mut config,
-    )
-    .unwrap();
+    let mut conn =
+        quiche::connect(None, &scid, local_addr, peer_addrs[0], &mut config)
+            .unwrap();
 
     if let Some(keylog) = &mut keylog {
         if let Ok(keylog) = keylog.try_clone() {
@@ -85,7 +83,10 @@ pub fn connect(local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: Te
         }
     }
 
-    info!("connecting to {:} from {:} with scid {:?}", peer_addrs[0], local_addr, scid);
+    info!(
+        "connecting to {:} from {:} with scid {:?}",
+        peer_addrs[0], local_addr, scid
+    );
 
     let (write, send_info) = conn.send(&mut out).expect("initial send failed");
     let token = src_addrs[&send_info.from];
@@ -103,7 +104,12 @@ pub fn connect(local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: Te
         return Err(ClientError::Other(format!("send() failed: {:?}", e)));
     }
 
-    trace!("init write: written {} bytes from {:} to {:}", write, send_info.from, send_info.to);
+    trace!(
+        "init write: written {} bytes from {:} to {:}",
+        write,
+        send_info.from,
+        send_info.to
+    );
 
     let app_data_start = std::time::Instant::now();
 
@@ -198,7 +204,9 @@ pub fn connect(local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: Te
 
         // Create a new application protocol session once the QUIC connection is
         // established.
-        if (conn.is_established() || conn.is_in_early_data()) && protocol.is_none() {
+        if (conn.is_established() || conn.is_in_early_data()) &&
+            protocol.is_none()
+        {
             let app_proto = conn.application_proto();
 
             if QUICPERF_ALPN.contains(&app_proto) {
@@ -237,114 +245,128 @@ pub fn connect(local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: Te
         // See whether source Connection IDs have been retired.
         while let Some(retired_scid) = conn.retired_scid_next() {
             info!("Retiring source CID {:?}", retired_scid);
-    }
+        }
 
-    // Provides as many CIDs as possible.
-    while conn.source_cids_left() > 0 {
-        let (scid, reset_token) = generate_cid_and_reset_token(&rng);
+        // Provides as many CIDs as possible.
+        while conn.source_cids_left() > 0 {
+            let (scid, reset_token) = generate_cid_and_reset_token(&rng);
 
-        if conn.new_source_cid(&scid, reset_token, false).is_err() {
+            if conn.new_source_cid(&scid, reset_token, false).is_err() {
+                break;
+            }
+        }
+
+        if probed_paths < addrs.len() {
+            trace!("probed_path={}, addrs={:?}", probed_paths, addrs);
+            let local_probe_addr = addrs[probed_paths];
+            let peer_probe_addr = peer_addrs[probed_paths];
+            if conn.available_dcids() > 0 {
+                match conn.probe_path(local_probe_addr, peer_probe_addr) {
+                    Ok(v) => {
+                        info!("{:}->{:} Successfully started probing for path with dcid {}",
+                        local_probe_addr, peer_probe_addr, v);
+                        probed_paths += 1;
+                    },
+                    Err(e) => error!(
+                        "{:}->{:} Failed probing path from: {}",
+                        local_probe_addr, peer_probe_addr, e
+                    ),
+                }
+            } else {
+                warn!(
+                    "{:}->{:} Failed to probe path: No DCID available.",
+                    local_probe_addr, peer_probe_addr
+                );
+            }
+        }
+
+        // Determine in which order we are going to iterate over paths.
+        let scheduled_tuples = lowest_latency_scheduler(&conn);
+
+        // Generate outgoing QUIC packets and send them on the UDP socket, until
+        // quiche reports that there are no more packets to be sent.
+        for (local_addr, peer_addr) in scheduled_tuples {
+            let token = src_addrs[&local_addr];
+            let socket = &sockets[token];
+            loop {
+                let (write, send_info) = match conn.send_on_path(
+                    &mut out,
+                    Some(local_addr),
+                    Some(peer_addr),
+                ) {
+                    Ok(v) => v,
+
+                    Err(quiche::Error::Done) => {
+                        trace!(
+                            "{} -> {}: done writing to conn",
+                            local_addr,
+                            peer_addr
+                        );
+                        break;
+                    },
+
+                    Err(e) => {
+                        error!(
+                            "{} -> {}: conn.send failed: {:?}",
+                            local_addr, peer_addr, e
+                        );
+
+                        conn.close(false, 0x1, b"fail").ok();
+                        break;
+                    },
+                };
+
+                if let Err(e) = socket.send_to(&out[..write], send_info.to) {
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        trace!(
+                            "{} -> {}: socket.send() would block",
+                            local_addr,
+                            send_info.to
+                        );
+                        break;
+                    }
+
+                    return Err(ClientError::Other(format!(
+                        "{} -> {}: send() failed: {:?}",
+                        local_addr, send_info.to, e
+                    )));
+                } else {
+                    trace!(
+                        "{} -> {}: {} bytes written to socket",
+                        local_addr,
+                        send_info.to,
+                        write
+                    );
+                }
+            }
+        }
+
+        if conn.is_closed() {
+            info!(
+                "connection closed, {:?} {:?}",
+                conn.stats(),
+                conn.path_stats().collect::<Vec<quiche::PathStats>>()
+            );
+
+            if !conn.is_established() {
+                error!(
+                    "connection timed out after {:?}",
+                    app_data_start.elapsed(),
+                );
+
+                return Err(ClientError::HandshakeFail);
+            }
+
+            // TODO
+            // if let Some(si_conn) = siduck_conn {
+            //     si_conn.report_incomplete(&app_data_start);
+            // }
+
             break;
         }
     }
 
-    if probed_paths < addrs.len() {
-        trace!("probed_path={}, addrs={:?}", probed_paths, addrs);
-        let local_probe_addr = addrs[probed_paths];
-        let peer_probe_addr = peer_addrs[probed_paths];
-        if conn.available_dcids() > 0 {
-            match conn.probe_path(local_probe_addr, peer_probe_addr) {
-                Ok(v) => {
-                    info!("{:}->{:} Successfully started probing for path with dcid {}",
-                        local_probe_addr, peer_probe_addr, v);
-                    probed_paths += 1;
-                },
-                Err(e) => error!("{:}->{:} Failed probing path from: {}",
-                    local_probe_addr, peer_probe_addr, e),
-            }
-        } else {
-            warn!("{:}->{:} Failed to probe path: No DCID available.",
-                local_probe_addr, peer_probe_addr);
-        }
-    }
-
-    // Determine in which order we are going to iterate over paths.
-    let scheduled_tuples = lowest_latency_scheduler(&conn);
-
-        // Generate outgoing QUIC packets and send them on the UDP socket, until
-    // quiche reports that there are no more packets to be sent.
-    for (local_addr, peer_addr) in scheduled_tuples {
-        let token = src_addrs[&local_addr];
-        let socket = &sockets[token];
-        loop {
-            let (write, send_info) = match conn.send_on_path(
-                &mut out,
-                Some(local_addr),
-                Some(peer_addr),
-            ) {
-                Ok(v) => v,
-
-                Err(quiche::Error::Done) => {
-                    trace!("{} -> {}: done writing to conn", local_addr, peer_addr);
-                    break;
-                },
-
-                Err(e) => {
-                    error!(
-                        "{} -> {}: conn.send failed: {:?}",
-                        local_addr, peer_addr, e
-                    );
-
-                    conn.close(false, 0x1, b"fail").ok();
-                    break;
-                },
-            };
-
-            if let Err(e) = socket.send_to(&out[..write], send_info.to) {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    trace!(
-                        "{} -> {}: socket.send() would block",
-                        local_addr,
-                        send_info.to
-                    );
-                    break;
-                }
-
-                return Err(ClientError::Other(format!(
-                    "{} -> {}: send() failed: {:?}", local_addr, send_info.to, e
-                )));
-            } else {
-                trace!("{} -> {}: {} bytes written to socket", local_addr, send_info.to, write);
-            }
-        }
-    }
-
-    if conn.is_closed() {
-        info!(
-            "connection closed, {:?} {:?}",
-            conn.stats(),
-            conn.path_stats().collect::<Vec<quiche::PathStats>>()
-        );
-
-        if !conn.is_established() {
-            error!(
-                "connection timed out after {:?}",
-                app_data_start.elapsed(),
-            );
-
-            return Err(ClientError::HandshakeFail);
-        }
-
-        // TODO
-        // if let Some(si_conn) = siduck_conn {
-        //     si_conn.report_incomplete(&app_data_start);
-        // }
-
-        break;
-    }
-}
-
-Ok(())
+    Ok(())
 }
 
 // Handle path events on client
@@ -354,19 +376,13 @@ fn client_handle_path_events(conn: &mut quiche::Connection) {
             quiche::PathEvent::New(..) => unreachable!(),
 
             quiche::PathEvent::Validated(local_addr, peer_addr) => {
-                info!(
-                    "Path ({}, {}) is now validated",
-                    local_addr, peer_addr
-                );
+                info!("Path ({}, {}) is now validated", local_addr, peer_addr);
                 // if conn_args.multipath {
                 conn.set_active(local_addr, peer_addr, true).ok();
             },
 
             quiche::PathEvent::FailedValidation(local_addr, peer_addr) => {
-                info!(
-                    "Path ({}, {}) failed validation",
-                    local_addr, peer_addr
-                );
+                info!("Path ({}, {}) failed validation", local_addr, peer_addr);
             },
 
             quiche::PathEvent::Closed(local_addr, peer_addr, e, reason) => {
@@ -376,11 +392,7 @@ fn client_handle_path_events(conn: &mut quiche::Connection) {
                 );
             },
 
-            quiche::PathEvent::ReusedSourceConnectionId(
-                cid_seq,
-                old,
-                new,
-            ) => {
+            quiche::PathEvent::ReusedSourceConnectionId(cid_seq, old, new) => {
                 info!(
                     "Peer reused cid seq {} (initially {:?}) on {:?}",
                     cid_seq, old, new
@@ -392,12 +404,11 @@ fn client_handle_path_events(conn: &mut quiche::Connection) {
             quiche::PathEvent::PeerPathStatus(..) => {},
         }
     }
-
 }
 
 #[derive(Debug)]
 pub enum ClientError {
-HandshakeFail,
-//HttpFail,
-Other(String),
+    HandshakeFail,
+    // HttpFail,
+    Other(String),
 }

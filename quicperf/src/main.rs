@@ -34,13 +34,14 @@
 extern crate log;
 extern crate serde;
 
-mod server;
 mod client;
 mod common;
-mod sendto;
 mod protocol;
+mod sendto;
+mod server;
 
-use std::{net::SocketAddr, time::Duration};
+use std::net::SocketAddr;
+use std::time::Duration;
 
 use crate::protocol::TestConfig;
 
@@ -84,16 +85,15 @@ fn main() {
 
         let duration = args.get_str("--duration").parse::<u64>().unwrap();
 
-        let tc = TestConfig{
+        let tc = TestConfig {
             client_sending: true,
             duration: Duration::from_secs(duration),
         };
-        
+
         match client::connect(local_addrs, peer_addrs, tc) {
             Err(client::ClientError::HandshakeFail) => std::process::exit(-1),
 
             // Err(client::ClientError::HttpFail) => std::process::exit(-2),
-
             Err(client::ClientError::Other(e)) => panic!("{}", e),
 
             Ok(_) => (),
