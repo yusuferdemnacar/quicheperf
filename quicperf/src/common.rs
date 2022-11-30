@@ -72,10 +72,11 @@ pub fn make_config() -> quiche::Config {
     config.set_max_idle_timeout(30_000); // in ms
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(10_000_000);
-    config.set_initial_max_stream_data_bidi_local(16_777_216);
-    config.set_initial_max_stream_data_bidi_remote(16_777_216);
-    config.set_initial_max_stream_data_uni(16_777_216);
+    config.set_initial_max_data(100 * 10_000_000);
+    let max_stream_data= 10 * 16_777_216;
+    config.set_initial_max_stream_data_bidi_local(max_stream_data);
+    config.set_initial_max_stream_data_bidi_remote(max_stream_data);
+    config.set_initial_max_stream_data_uni(max_stream_data);
     config.set_initial_max_streams_bidi(100);
     config.set_initial_max_streams_uni(100);
     config.set_ack_delay_exponent(3); // quiche default
