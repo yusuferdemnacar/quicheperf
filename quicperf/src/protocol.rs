@@ -1,10 +1,14 @@
+use std::time::{Instant, Duration};
+
+use quiche::Connection;
 use serde::{Serialize, Deserialize};
 
 pub const SEND_DATA: [u8; 65507] = [0; 65507];
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub struct TestConfig {
-    client_sending: bool,
+    pub client_sending: bool,
+    pub duration: Duration,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -12,21 +16,45 @@ pub struct TestConfigAck {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct Protocol {
     pub config_sent: bool,
     pub config_acked: bool,
+    tc: Option<TestConfig>,
+    start: Option<Instant>,
 }
 
 impl Protocol {
     pub fn new() -> Self {
-        Self { config_sent: false, config_acked: false }
+        Self {
+            config_sent: false,
+            config_acked: false,
+            tc: None,
+            start: None }
+    }
+
+    pub fn check_duration(&self, conn: &mut Connection) {
+        let duration = match (self.tc, self.start) {
+            (Some(tc), Some(start)) =>
+                tc.duration.checked_sub(start.elapsed()).unwrap_or(std::time::Duration::ZERO),
+            _ => return,
+        };
+        if duration > std::time::Duration::ZERO {
+            return
+        }
+        info!("Closing connection after {:?} because --duration={:?} passed",
+            self.start.unwrap().elapsed(), self.tc.unwrap().duration);
+        match conn.close(true, 0x00, b"kthxbye") {
+            // Already closed.
+            Ok(_) | Err(quiche::Error::Done) => Some(()),
+            Err(e) => panic!("error closing conn: {:?}", e),
+        };
     }
 
     // Called by client to kick off test
-    pub fn send_config(&mut self, conn: &mut quiche::Connection) -> quiche::Result<()> {
+    pub fn send_config(&mut self, conn: &mut Connection, tc: TestConfig) -> quiche::Result<()> {
         trace!("Trying to send test configuration request");
 
-        let tc = TestConfig { client_sending: true };
         let msg = serde_json::to_string(&tc).unwrap();
         let written = match conn.stream_send(0,msg.as_bytes(), false) {
             Ok(v) => v,
@@ -47,14 +75,17 @@ impl Protocol {
             self.config_sent = true;
         }
 
+        self.tc = Some(tc);
+        self.start = Some(Instant::now());
+
         Ok(())
     }
 
     // Called by client after sending TestConfig
-    pub fn recv_config_ack(&mut self, conn: &mut quiche::Connection, buf: &mut [u8]) -> quiche::Result<()> {
+    pub fn recv_config_ack(&mut self, conn: &mut Connection, buf: &mut [u8]) -> quiche::Result<()> {
         warn!("receiving test config ack");
 
-        while let Ok((read, fin)) = conn.stream_recv(0, buf) {
+        while let Ok((read, _fin)) = conn.stream_recv(0, buf) {
             trace!("{} received {} bytes from stream {}", conn.trace_id(), read, 0);
 
             let tca: TestConfigAck = match serde_json::from_slice(&buf[..read]) {
@@ -77,7 +108,7 @@ impl Protocol {
         Ok(())
     }
 
-    pub fn send_data(&mut self, conn: &mut quiche::Connection) -> quiche::Result<()> {
+    pub fn send_data(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         warn!("sending data");
         loop { 
             let written = match conn.stream_send(0,&SEND_DATA, false) {
@@ -96,7 +127,7 @@ impl Protocol {
         Ok(())
     }
 
-    pub fn recv_data(&mut self, conn: &mut quiche::Connection, buf: &mut [u8]) -> quiche::Result<()> {
+    pub fn recv_data(&mut self, conn: &mut Connection, buf: &mut [u8]) -> quiche::Result<()> {
         warn!("receiving data");
         while let Ok((read, fin)) = conn.stream_recv(0, buf) {
             trace!("{} received {} bytes from stream {}", conn.trace_id(), read, 0);
@@ -110,13 +141,13 @@ impl Protocol {
         Ok(())
     }
 
-    pub fn recv_config(&mut self, conn: &mut quiche::Connection, buf: &mut [u8]) -> quiche::Result<()> {
+    pub fn recv_config(&mut self, conn: &mut Connection, buf: &mut [u8]) -> quiche::Result<()> {
         debug!("receiving test config");
 
         for s in conn.readable() {
             trace!("Reading from stream {}", s);
             match conn.stream_recv(s, buf) {
-                Ok((read, fin)) => {
+                Ok((read, _fin)) => {
                     let tc: TestConfig = match serde_json::from_slice(&buf[..read]) {
                         Ok(tc) => tc,
                         Err(e) => {
@@ -144,6 +175,8 @@ impl Protocol {
 
                     debug!("{} wrote TestConfigAck: {} bytes", conn.trace_id(), written);
                     self.config_acked = true;
+
+                    self.tc = Some(tc);
                 },
                 Err(e) => { debug!("stream_recv error: {}", e) }
             }

@@ -1,4 +1,4 @@
-use crate::protocol::Protocol;
+use crate::protocol::{Protocol, TestConfig};
 use crate::common::*;
 
 use std::net::SocketAddr;
@@ -6,7 +6,7 @@ use ring::rand::*;
 use std::collections::HashMap;
 use slab::Slab;
 
-pub fn connect(local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>) -> Result<(), ClientError> {
+pub fn connect(local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: TestConfig) -> Result<(), ClientError> {
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
@@ -213,8 +213,9 @@ pub fn connect(local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>) -> Res
         // If we have a siduck connection, first issue the quacks then
         // process received data.
         if let Some(protocol) = protocol.as_mut() {
+            protocol.check_duration(&mut conn);
             if !protocol.config_sent {
-                if protocol.send_config(&mut conn).is_err() {
+                if protocol.send_config(&mut conn, tc).is_err() {
                     continue;
                 }
             } else if !protocol.config_acked {

@@ -40,12 +40,16 @@ mod common;
 mod sendto;
 mod protocol;
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
+
+use crate::protocol::TestConfig;
 
 const USAGE: &'static str = "
 Usage: quicperf server (-l <local_addr>)...
        quicperf client (-l <local_addr>)... (-c <peer_addr>)...
        quicperf -h | --help
+
+-d <duration>, --duration=<duration>     Time in seconds to run test for [default: 10]
 ";
 
 fn main() {
@@ -77,8 +81,15 @@ fn main() {
         server::listen(local_addrs);
     } else if args.get_bool("client") {
         info!("is client");
+
+        let duration = args.get_str("--duration").parse::<u64>().unwrap();
+
+        let tc = TestConfig{
+            client_sending: true,
+            duration: Duration::from_secs(duration),
+        };
         
-        match client::connect(local_addrs, peer_addrs) {
+        match client::connect(local_addrs, peer_addrs, tc) {
             Err(client::ClientError::HandshakeFail) => std::process::exit(-1),
 
             // Err(client::ClientError::HttpFail) => std::process::exit(-2),
