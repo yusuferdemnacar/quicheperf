@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 use std::time::Instant;
@@ -6,12 +7,38 @@ use itertools::Itertools;
 
 use crate::protocol::TestConfig;
 
+#[derive(PartialEq, Eq, Hash, Copy, Clone)]
+struct FourTuple {
+    local_addr: SocketAddr,
+    peer_addr: SocketAddr,
+}
+
+struct PathStats {
+    sent_bytes: u64,
+    recv_bytes: u64,
+    lost: usize,
+    lost_spurious: usize,
+}
+
+impl PathStats {
+    fn new() -> Self {
+        PathStats {
+            sent_bytes: 0,
+            recv_bytes: 0,
+            lost: 0,
+            lost_spurious: 0,
+        }
+    }
+}
+
 pub struct UI {
     start: Instant,
     last_update: Option<Instant>,
 
     sent_bytes_prev: u64,
     lost_prev: usize,
+
+    paths: HashMap<FourTuple, PathStats>,
 }
 
 impl UI {
@@ -22,6 +49,8 @@ impl UI {
 
             sent_bytes_prev: 0,
             lost_prev: 0,
+
+            paths: HashMap::new(),
         }
     }
 
@@ -52,28 +81,58 @@ impl UI {
     }
 
     pub fn update(&mut self, conn: &quiche::Connection) {
+        if self.last_update.is_none() {
+            println!(
+                "{:<5} | {:<10} | {:<10} | {:<10}",
+                "sec", "Mbps", "P0 Mbps", "P0 Lost",
+            )
+        }
         if self.last_update.is_some() &&
             self.last_update.unwrap().elapsed() <= Duration::from_secs(1)
         {
             return;
         }
 
+        let mut pstr = String::new();
+
         let stats = conn.stats();
         let tput_total =
             (stats.sent_bytes - self.sent_bytes_prev) as f32 * 8.0 / 1e6;
-        let lost_total = stats.lost - self.lost_prev;
+        // let lost_total = stats.lost - self.lost_prev;
 
-        let mut pstr = String::new();
-        for (i, pstat) in conn.path_stats().enumerate() {
-            let ptput = pstat.delivery_rate as f32 * 8.0 / 1e6;
-            pstr.push_str(&format!(", path {}={:.2} Mbps", i, ptput));
+        for (_i, pstat) in conn.path_stats().enumerate() {
+            let key = FourTuple{local_addr: pstat.local_addr, peer_addr:pstat.peer_addr};
+            let pstat_prev = match self.paths.get_mut(&key) {
+                Some(v) => v,
+                None => {
+                    self.paths.insert(key, PathStats::new());
+                    self.paths.get_mut(&key).unwrap()
+                },
+            };
+
+            // let ptput = pstat.delivery_rate as f32 * 8.0 / 1e6;
+            let ptput = (pstat.sent_bytes - pstat_prev.sent_bytes) as f32 * 8.0 / 1e6;
+            let plost = pstat.lost - pstat_prev.lost;
+
+            pstr.push_str(&format!(
+                "| {:<10.2} | {:<10}",
+                ptput, plost
+            ));
+
+            pstat_prev.sent_bytes = pstat.sent_bytes;
+            pstat_prev.lost = pstat.lost;
         }
 
-        println!("[{sec}] throughput={tput_total:.2} Mbps, lost={lost_total} packets{pstr}",
-            sec=self.start.elapsed().as_secs(),
-            tput_total=tput_total,
-            lost_total=lost_total,
-            pstr=pstr);
+        // println!("[{sec}] throughput={tput_total:.2} Mbps, lost={lost_total} packets{pstr}",
+        //     sec=self.start.elapsed().as_secs(),
+        //     tput_total=tput_total,
+        //     lost_total=lost_total,
+        //     pstr=pstr);
+
+        println!(
+            "{:<5} | {:<10.2}{}",
+            self.start.elapsed().as_secs(), tput_total, pstr
+        );
 
         self.last_update = Some(Instant::now());
         self.sent_bytes_prev = stats.sent_bytes;
