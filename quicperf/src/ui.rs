@@ -123,19 +123,26 @@ impl UI {
             pstat_prev.lost = pstat.lost;
         }
 
-        // println!("[{sec}] throughput={tput_total:.2} Mbps, lost={lost_total} packets{pstr}",
-        //     sec=self.start.elapsed().as_secs(),
-        //     tput_total=tput_total,
-        //     lost_total=lost_total,
-        //     pstr=pstr);
-
         println!(
-            "{:<5} | {:<10.2}{}",
+            "{:<5} | {:<10.2} {}",
             self.start.elapsed().as_secs(), tput_total, pstr
         );
 
         self.last_update = Some(Instant::now());
         self.sent_bytes_prev = stats.sent_bytes;
         self.lost_prev = stats.lost;
+    }
+
+    pub fn print_summary(&mut self, conn: &quiche::Connection) {
+        let stats = conn.stats();
+
+
+        let tput_total = (stats.sent_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6;
+        let lost_perc = (stats.lost as f32 / stats.sent as f32) * 100.0;
+
+        println!(
+            "{:<5} | {:<10.2} | {:.4}% packet loss",
+            "Avg", tput_total, lost_perc
+        );
     }
 }

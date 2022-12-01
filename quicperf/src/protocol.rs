@@ -37,16 +37,16 @@ impl Protocol {
         }
     }
 
-    pub fn check_duration(&self, conn: &mut Connection) {
+    pub fn close_after_duration(&self, conn: &mut Connection) -> bool {
         let duration = match (&self.tc, self.start) {
             (Some(tc), Some(start)) => tc
                 .duration
                 .checked_sub(start.elapsed())
                 .unwrap_or(std::time::Duration::ZERO),
-            _ => return,
+            _ => return false,
         };
         if duration > std::time::Duration::ZERO {
-            return;
+            return false;
         }
         debug!(
             "Closing connection after {:?} because --duration={:?} passed",
@@ -55,9 +55,9 @@ impl Protocol {
         );
         match conn.close(true, 0x00, b"kthxbye") {
             // Already closed.
-            Ok(_) | Err(quiche::Error::Done) => Some(()),
+            Ok(_) | Err(quiche::Error::Done) => true,
             Err(e) => panic!("error closing conn: {:?}", e),
-        };
+        }
     }
 
     // Called by client to kick off test

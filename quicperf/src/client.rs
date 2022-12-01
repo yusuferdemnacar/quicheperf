@@ -124,7 +124,9 @@ pub fn connect(
             poll.poll(&mut events, timeout).unwrap();
         }
 
-        ui.update(&conn);
+        if !conn.is_closed() && !conn.is_draining() {
+            ui.update(&conn);
+        }
 
         // If the event loop reported no events, it means that the timeout
         // has expired, so handle it without attempting to read packets. We
@@ -222,19 +224,24 @@ pub fn connect(
         }
 
         if let Some(protocol) = protocol.as_mut() {
-            protocol.check_duration(&mut conn);
-            if !protocol.config_sent {
-                if protocol.send_config(&mut conn, &tc).is_err() {
-                    continue;
+            if !conn.is_closed() && !conn.is_draining() {
+                if protocol.close_after_duration(&mut conn) {
+                    // Closed connection
+                    ui.print_summary(&conn);
                 }
-            } else if !protocol.config_acked {
-                if protocol.recv_config_ack(&mut conn, &mut buf).is_err() {
-                    continue;
+                if !protocol.config_sent {
+                    if protocol.send_config(&mut conn, &tc).is_err() {
+                        continue;
+                    }
+                } else if !protocol.config_acked {
+                    if protocol.recv_config_ack(&mut conn, &mut buf).is_err() {
+                        continue;
+                    }
                 }
-            }
-            if protocol.config_acked {
-                if protocol.send_data(&mut conn).is_err() {
-                    continue;
+                if protocol.config_acked {
+                    if protocol.send_data(&mut conn).is_err() {
+                        continue;
+                    }
                 }
             }
         }
