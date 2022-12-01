@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 pub fn connect(
-    local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: TestConfig,
+    local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: TestConfig, mut config: quiche::Config
 ) -> Result<(), ClientError> {
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
@@ -45,9 +45,6 @@ pub fn connect(
             .unwrap();
     }
     let local_addr = *addrs.first().unwrap();
-
-    // Create the configuration for the QUIC connection.
-    let mut config = make_config();
 
     let mut keylog = configure_keylog();
     config.log_keys();

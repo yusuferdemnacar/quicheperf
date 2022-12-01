@@ -61,54 +61,6 @@ pub fn generate_cid_and_reset_token<T: SecureRandom>(
     (scid, reset_token)
 }
 
-pub fn make_config() -> quiche::Config {
-    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
-
-    config
-        .load_cert_chain_from_pem_file(
-            "/home/cech/Research/MPQUIC/quiche/quicperf/src/cert.crt",
-        )
-        .unwrap();
-    config
-        .load_priv_key_from_pem_file(
-            "/home/cech/Research/MPQUIC/quiche/quicperf/src/cert.key",
-        )
-        .unwrap();
-
-    config.set_application_protos(&QUICPERF_ALPN).unwrap();
-
-    config.set_max_idle_timeout(30_000); // in ms
-    config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(100 * 10_000_000);
-    let max_stream_data = 10 * 16_777_216;
-    config.set_initial_max_stream_data_bidi_local(max_stream_data);
-    config.set_initial_max_stream_data_bidi_remote(max_stream_data);
-    config.set_initial_max_stream_data_uni(max_stream_data);
-    config.set_initial_max_streams_bidi(100);
-    config.set_initial_max_streams_uni(100);
-    config.set_ack_delay_exponent(3); // quiche default
-    config.set_max_ack_delay(25); // quiche default
-    config.set_active_connection_id_limit(5);
-    config.set_disable_active_migration(false);
-    config.set_multipath(true);
-
-    config.set_cc_algorithm_name("cubic").unwrap();
-
-    config.enable_hystart(true);
-    config.enable_pacing(true);
-
-    config.enable_dgram(false, 1000, 1000);
-
-    config.set_max_connection_window(25_165_824);
-    config.set_max_stream_window(16_777_216);
-
-    // config.set_stateless_reset_token
-    // config.set_disable_dcid_reuse
-
-    config
-}
-
 pub fn configure_keylog() -> Option<File> {
     if let Some(keylog_path) = std::env::var_os("SSLKEYLOGFILE") {
         let file = std::fs::OpenOptions::new()

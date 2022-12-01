@@ -32,7 +32,7 @@ struct Client {
 type ClientIdMap = HashMap<ConnectionId<'static>, ClientId>;
 type ClientMap = HashMap<ClientId, Client>;
 
-pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>) {
+pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config: quiche::Config) {
     let mut buf = [0; MAX_BUF_SIZE];
     let mut out = [0; MAX_BUF_SIZE];
 
@@ -70,9 +70,6 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>) {
     // Set SO_TXTIME socket option on the listening UDP socket for pacing
     // outgoing packets.
     let pacing = true;
-
-    // Create the configuration for the QUIC connections.
-    let mut config = make_config();
 
     let mut keylog = configure_keylog();
 

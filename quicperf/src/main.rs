@@ -42,22 +42,23 @@ mod server;
 mod ui;
 
 use std::net::SocketAddr;
-use std::process::exit;
-use std::process::{self,};
+use std::process::{ExitCode};
 use std::time::Duration;
 
 use crate::protocol::TestConfig;
 
 const USAGE: &'static str = "
-Usage: quicperf server [-p <password>] (-l <local_addr>)...
+Usage: quicperf server [-p <password>] --cert <cert> --key <key> (-l <local_addr>)...
        quicperf client [-d <duration> -p <password>] (-l <local_addr>)... (-c <peer_addr>)...
        quicperf -h | --help
 
+--cert <cert>                           Path to the server certificate
+--key <key>                             Path to the certificate's private key
 -d <duration>, --duration=<duration>    Time in seconds to run test for [default: 10]
 -p <password>, --password=<password>    Password required to start test
 ";
 
-fn main() {
+fn main() -> ExitCode {
     env_logger::builder()
         .default_format_timestamp_nanos(true)
         .init();
@@ -84,11 +85,26 @@ fn main() {
     };
 
     if args.get_bool("server") {
-        server::listen(local_addrs, password);
+        let mut config = make_quiche_config();
+        let cert = args.get_str("--cert");
+        if let Err(e) = config.load_cert_chain_from_pem_file(cert) {
+            eprintln!("Error loading certificate from {}: {}", cert, e);
+            return ExitCode::FAILURE;
+        };
+
+        let key = args.get_str("--key");
+        if let Err(e) = config.load_priv_key_from_pem_file(key) {
+            eprintln!("Error loading private key from {}: {}", key, e);
+            return ExitCode::FAILURE;
+        };
+        
+        
+        server::listen(local_addrs, password, config);
+
     } else if args.get_bool("client") {
         if local_addrs.len() != peer_addrs.len() {
-            println!("Same number of local and peer addresses expected. One path will be created per pair.");
-            exit(1);
+            eprintln!("Same number of local and peer addresses expected. One path will be created per pair.");
+            return ExitCode::FAILURE;
         }
 
         let duration = args.get_str("--duration").parse::<u64>().unwrap();
@@ -99,13 +115,67 @@ fn main() {
             duration: Duration::from_secs(duration),
         };
 
-        match client::connect(local_addrs, peer_addrs, tc) {
-            Err(client::ClientError::HandshakeFail) => process::exit(-1),
+        let config = make_quiche_config();
+
+        return match client::connect(local_addrs, peer_addrs, tc, config) {
+            Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
             // Err(client::ClientError::HttpFail) => std::process::exit(-2),
-            Err(client::ClientError::Other(e)) => panic!("{}", e),
+            Err(client::ClientError::Other(e)) => {
+                eprintln!("{}", e);
+                ExitCode::FAILURE
+            },
 
-            Ok(_) => (),
-        }
+            Ok(_) => ExitCode::SUCCESS,
+        };
     }
+
+    ExitCode::FAILURE
+}
+
+pub fn make_quiche_config() -> quiche::Config {
+    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
+
+    // config
+    //         "/home/cech/Research/MPQUIC/quiche/quicperf/src/cert.crt",
+    //     )
+    //     .unwrap();
+    // config
+    //     .load_priv_key_from_pem_file(
+    //         "/home/cech/Research/MPQUIC/quiche/quicperf/src/cert.key",
+    //     )
+    //     .unwrap();
+
+    config.set_application_protos(&common::QUICPERF_ALPN).unwrap();
+
+    config.set_max_idle_timeout(30_000); // in ms
+    config.set_max_recv_udp_payload_size(common::MAX_DATAGRAM_SIZE);
+    config.set_max_send_udp_payload_size(common::MAX_DATAGRAM_SIZE);
+    config.set_initial_max_data(100 * 10_000_000);
+    let max_stream_data = 10 * 16_777_216;
+    config.set_initial_max_stream_data_bidi_local(max_stream_data);
+    config.set_initial_max_stream_data_bidi_remote(max_stream_data);
+    config.set_initial_max_stream_data_uni(max_stream_data);
+    config.set_initial_max_streams_bidi(100);
+    config.set_initial_max_streams_uni(100);
+    config.set_ack_delay_exponent(3); // quiche default
+    config.set_max_ack_delay(25); // quiche default
+    config.set_active_connection_id_limit(5);
+    config.set_disable_active_migration(false);
+    config.set_multipath(true);
+
+    config.set_cc_algorithm_name("cubic").unwrap();
+
+    config.enable_hystart(true);
+    config.enable_pacing(true);
+
+    config.enable_dgram(false, 1000, 1000);
+
+    config.set_max_connection_window(25_165_824);
+    config.set_max_stream_window(16_777_216);
+
+    // config.set_stateless_reset_token
+    // config.set_disable_dcid_reuse
+
+    config
 }
