@@ -32,7 +32,7 @@ struct Client {
 type ClientIdMap = HashMap<ConnectionId<'static>, ClientId>;
 type ClientMap = HashMap<ClientId, Client>;
 
-pub fn listen(local_addrs: Vec<SocketAddr>) {
+pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>) {
     let mut buf = [0; MAX_BUF_SIZE];
     let mut out = [0; MAX_BUF_SIZE];
 
@@ -92,10 +92,8 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
         // TODO: use event loop that properly supports timers
         let timeout = match continue_write {
             true => Some(std::time::Duration::from_secs(0)),
-
             false => clients.values().filter_map(|c| c.conn.timeout()).min(),
         };
-
         poll.poll(&mut events, timeout).unwrap();
 
         // If the event loop reported no events, it means that the timeout
@@ -301,7 +299,7 @@ pub fn listen(local_addrs: Vec<SocketAddr>) {
                     let protocol = client.protocol.as_mut().unwrap();
                     if !protocol.config_acked {
                         if protocol
-                            .recv_config(&mut client.conn, &mut buf)
+                            .recv_config(&mut client.conn, &mut buf, &password)
                             .is_err()
                         {
                             continue 'read;

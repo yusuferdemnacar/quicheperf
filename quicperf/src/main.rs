@@ -49,11 +49,12 @@ use std::time::Duration;
 use crate::protocol::TestConfig;
 
 const USAGE: &'static str = "
-Usage: quicperf server (-l <local_addr>)...
-       quicperf client (-l <local_addr>)... (-c <peer_addr>)...
+Usage: quicperf server [-p <password>] (-l <local_addr>)...
+       quicperf client [-d <duration> -p <password>] (-l <local_addr>)... (-c <peer_addr>)...
        quicperf -h | --help
 
--d <duration>, --duration=<duration>     Time in seconds to run test for [default: 10]
+-d <duration>, --duration=<duration>    Time in seconds to run test for [default: 10]
+-p <password>, --password=<password>    Password required to start test
 ";
 
 fn main() {
@@ -77,14 +78,14 @@ fn main() {
         .filter_map(|a| a.parse().ok())
         .collect();
 
-    info!("peer_addrs={:?}", peer_addrs);
+    let password = match args.get_str("--password") {
+        "" => None,
+        s => Some(s.to_string()),
+    };
 
     if args.get_bool("server") {
-        info!("is server");
-        server::listen(local_addrs);
+        server::listen(local_addrs, password);
     } else if args.get_bool("client") {
-        info!("is client");
-
         if local_addrs.len() != peer_addrs.len() {
             println!("Same number of local and peer addresses expected. One path will be created per pair.");
             exit(1);
@@ -93,6 +94,7 @@ fn main() {
         let duration = args.get_str("--duration").parse::<u64>().unwrap();
 
         let tc = TestConfig {
+            password,
             client_sending: true,
             duration: Duration::from_secs(duration),
         };

@@ -7,8 +7,9 @@ use serde::Serialize;
 
 pub const SEND_DATA: [u8; 65507] = [0; 65507];
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TestConfig {
+    pub password: Option<String>,
     pub client_sending: bool,
     pub duration: Duration,
 }
@@ -18,7 +19,7 @@ pub struct TestConfigAck {
     error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Protocol {
     pub config_sent: bool,
     pub config_acked: bool,
@@ -37,7 +38,7 @@ impl Protocol {
     }
 
     pub fn check_duration(&self, conn: &mut Connection) {
-        let duration = match (self.tc, self.start) {
+        let duration = match (&self.tc, self.start) {
             (Some(tc), Some(start)) => tc
                 .duration
                 .checked_sub(start.elapsed())
@@ -50,7 +51,7 @@ impl Protocol {
         debug!(
             "Closing connection after {:?} because --duration={:?} passed",
             self.start.unwrap().elapsed(),
-            self.tc.unwrap().duration
+            self.tc.as_ref().unwrap().duration
         );
         match conn.close(true, 0x00, b"kthxbye") {
             // Already closed.
@@ -61,7 +62,7 @@ impl Protocol {
 
     // Called by client to kick off test
     pub fn send_config(
-        &mut self, conn: &mut Connection, tc: TestConfig,
+        &mut self, conn: &mut Connection, tc: &TestConfig,
     ) -> quiche::Result<()> {
         trace!("Trying to send test configuration request");
 
@@ -85,7 +86,7 @@ impl Protocol {
             self.config_sent = true;
         }
 
-        self.tc = Some(tc);
+        self.tc = Some(tc.clone());
         self.start = Some(Instant::now());
 
         Ok(())
@@ -172,66 +173,76 @@ impl Protocol {
     }
 
     pub fn recv_config(
-        &mut self, conn: &mut Connection, buf: &mut [u8],
+        &mut self, conn: &mut Connection, buf: &mut [u8], password: &Option<String>
     ) -> quiche::Result<()> {
         debug!("receiving test config");
+        let s = 0;
+        trace!("Reading from stream {}", s);
+        match conn.stream_recv(s, buf) {
+            Ok((read, _fin)) => {
+                let tc: TestConfig =
+                    match serde_json::from_slice(&buf[..read]) {
+                        Ok(tc) => tc,
+                        Err(e) => {
+                            error!("Serde test config error: {}", e);
+                            conn.close(
+                                true,
+                                0x1,
+                                b"failed parsing test config",
+                            )
+                            .unwrap();
+                            return Err(quiche::Error::Done);
+                        },
+                    };
 
-        for s in conn.readable() {
-            trace!("Reading from stream {}", s);
-            match conn.stream_recv(s, buf) {
-                Ok((read, _fin)) => {
-                    let tc: TestConfig =
-                        match serde_json::from_slice(&buf[..read]) {
-                            Ok(tc) => tc,
-                            Err(e) => {
-                                error!("Serde test config error: {}", e);
-                                conn.close(
-                                    true,
-                                    0x1,
-                                    b"failed parsing test config",
-                                )
-                                .unwrap();
-                                return Err(quiche::Error::Done);
-                            },
-                        };
+                debug!(
+                    "Parsed test config: client_sending={}",
+                    tc.client_sending
+                );
 
-                    debug!(
-                        "Parsed test config: client_sending={}",
-                        tc.client_sending
-                    );
+                if !match (password, &tc.password) {
+                    (Some(exp), Some(rcvd)) => exp == rcvd,
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                } {
+                    info!("Authentication failed, closing connection");
+                    match conn.close(true, 0x10, b"authentication failed") {
+                        Ok(_) | Err(quiche::Error::Done) => return Ok(()),
+                        Err(e) => panic!("error closing conn: {:?}", e),
+                    };
+                }
 
-                    let ack = TestConfigAck { error: None };
-                    let resp = serde_json::to_string(&ack).unwrap();
+                let ack = TestConfigAck { error: None };
+                let resp = serde_json::to_string(&ack).unwrap();
 
-                    let written =
-                        match conn.stream_send(s, resp.as_bytes(), false) {
-                            Ok(v) => v,
+                let written =
+                    match conn.stream_send(s, resp.as_bytes(), false) {
+                        Ok(v) => v,
 
-                            Err(quiche::Error::Done) => 0,
+                        Err(quiche::Error::Done) => 0,
 
-                            Err(e) => {
-                                error!(
-                                    "{} stream send failed {:?}",
-                                    conn.trace_id(),
-                                    e
-                                );
-                                return Err(From::from(e));
-                            },
-                        };
+                        Err(e) => {
+                            error!(
+                                "{} stream send failed {:?}",
+                                conn.trace_id(),
+                                e
+                            );
+                            return Err(From::from(e));
+                        },
+                    };
 
-                    debug!(
-                        "{} wrote TestConfigAck: {} bytes",
-                        conn.trace_id(),
-                        written
-                    );
-                    self.config_acked = true;
+                debug!(
+                    "{} wrote TestConfigAck: {} bytes",
+                    conn.trace_id(),
+                    written
+                );
+                self.config_acked = true;
 
-                    self.tc = Some(tc);
-                },
-                Err(e) => {
-                    debug!("stream_recv error: {}", e)
-                },
-            }
+                self.tc = Some(tc);
+            },
+            Err(e) => {
+                debug!("stream_recv error: {}", e)
+            },
         }
 
         Ok(())

@@ -224,13 +224,10 @@ pub fn connect(
             }
         }
 
-        // TODO: process protocol
-        // If we have a siduck connection, first issue the quacks then
-        // process received data.
         if let Some(protocol) = protocol.as_mut() {
             protocol.check_duration(&mut conn);
             if !protocol.config_sent {
-                if protocol.send_config(&mut conn, tc).is_err() {
+                if protocol.send_config(&mut conn, &tc).is_err() {
                     continue;
                 }
             } else if !protocol.config_acked {
@@ -243,8 +240,6 @@ pub fn connect(
                     continue;
                 }
             }
-            // protocol.send_quacks(&mut conn);
-            // si_conn.handle_quack_acks(&mut conn, &mut buf, &app_data_start);
         }
 
         client_handle_path_events(&mut conn);
