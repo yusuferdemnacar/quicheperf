@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use crate::common;
 use crate::protocol::Protocol;
 
 use super::common::*;
@@ -32,7 +33,10 @@ struct Client {
 type ClientIdMap = HashMap<ConnectionId<'static>, ClientId>;
 type ClientMap = HashMap<ClientId, Client>;
 
-pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config: quiche::Config) {
+pub fn listen(
+    local_addrs: Vec<SocketAddr>, password: Option<String>,
+    mut config: quiche::Config,
+) {
     let mut buf = [0; MAX_BUF_SIZE];
     let mut out = [0; MAX_BUF_SIZE];
 
@@ -202,18 +206,12 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
 
                     // Only bother with qlog if the user specified it.
                     #[cfg(feature = "qlog")]
-                    {
-                        if let Some(dir) = std::env::var_os("QLOGDIR") {
-                            let id = format!("{:?}", &scid);
-                            let writer = make_qlog_writer(&dir, "server", &id);
-
-                            conn.set_qlog(
-                                std::boxed::Box::new(writer),
-                                "quiche-server qlog".to_string(),
-                                format!("{} id={}", "quiche-server qlog", id),
-                            );
-                        }
-                    }
+                    common::set_qlog(
+                        &mut conn,
+                        format!("{:?}", &hdr.scid),
+                        "server",
+                        None,
+                    );
 
                     let client_id = next_client_id;
 

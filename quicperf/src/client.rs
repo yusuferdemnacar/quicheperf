@@ -1,15 +1,17 @@
+use crate::common;
 use crate::common::*;
 use crate::protocol::Protocol;
 use crate::protocol::TestConfig;
 use crate::ui;
-
+use itertools::Itertools;
 use ring::rand::*;
 use slab::Slab;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
 pub fn connect(
-    local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: TestConfig, mut config: quiche::Config
+    local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: TestConfig,
+    mut config: quiche::Config,
 ) -> Result<(), ClientError> {
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
@@ -72,16 +74,20 @@ pub fn connect(
     // Only bother with qlog if the user specified it.
     #[cfg(feature = "qlog")]
     {
-        if let Some(dir) = std::env::var_os("QLOGDIR") {
-            let id = format!("{:?}", scid);
-            let writer = make_qlog_writer(&dir, "client", &id);
-
-            conn.set_qlog(
-                std::boxed::Box::new(writer),
-                "quiche-client qlog".to_string(),
-                format!("{} id={}", "quiche-client qlog", id),
-            );
-        }
+        #![allow(unstable_name_collisions)]
+        let peer_addrs_str = Some(
+            peer_addrs
+                .iter()
+                .map(|a| a.to_string())
+                .intersperse(",".to_string())
+                .collect(),
+        );
+        common::set_qlog(
+            &mut conn,
+            format!("{:?}", scid),
+            "client",
+            peer_addrs_str,
+        );
     }
 
     info!(

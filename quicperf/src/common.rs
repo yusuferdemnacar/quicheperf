@@ -30,21 +30,40 @@ pub fn set_txtime_sockopt(sock: &mio::net::UdpSocket) -> io::Result<()> {
     Ok(())
 }
 
-/// Makes a buffered writer for a qlog.
-pub fn make_qlog_writer(
-    dir: &std::ffi::OsStr, role: &str, id: &str,
-) -> std::io::BufWriter<std::fs::File> {
-    let mut path = std::path::PathBuf::from(dir);
-    let filename = format!("{}-{}.sqlog", role, id);
-    path.push(filename);
+pub fn set_qlog(
+    conn: &mut quiche::Connection, scid: String, role: &str,
+    peer_addr: Option<String>,
+) {
+    if let Some(dir) = std::env::var_os("QLOGDIR") {
+        let start_time = chrono::Local::now();
 
-    match std::fs::File::create(&path) {
-        Ok(f) => std::io::BufWriter::new(f),
+        let mut path = std::path::PathBuf::from(dir);
+        let filename = format!("{}-{}.sqlog", scid, role);
+        path.push(filename);
 
-        Err(e) => panic!(
-            "Error creating qlog file attempted path was {:?}: {}",
-            path, e
-        ),
+        let writer = match std::fs::File::create(&path) {
+            Ok(f) => std::io::BufWriter::new(f),
+            Err(e) => panic!(
+                "Error creating qlog file attempted path was {:?}: {}",
+                path, e
+            ),
+        };
+
+        let peer_addr = match peer_addr {
+            Some(s) => format!(" peer_addr={}", s),
+            None => "".to_string(),
+        };
+
+        conn.set_qlog(
+            std::boxed::Box::new(writer),
+            "quicperf".to_string(),
+            format!(
+                "quicperf id={} start_time={}{}",
+                scid,
+                start_time.to_rfc3339(),
+                peer_addr
+            ),
+        );
     }
 }
 

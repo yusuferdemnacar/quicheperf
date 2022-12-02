@@ -96,7 +96,7 @@ impl Protocol {
     pub fn recv_config_ack(
         &mut self, conn: &mut Connection, buf: &mut [u8],
     ) -> quiche::Result<()> {
-        warn!("receiving test config ack");
+        info!("receiving test config ack");
 
         while let Ok((read, _fin)) = conn.stream_recv(0, buf) {
             trace!(
@@ -148,7 +148,7 @@ impl Protocol {
     pub fn recv_data(
         &mut self, conn: &mut Connection, buf: &mut [u8],
     ) -> quiche::Result<()> {
-        warn!("receiving data");
+        trace!("receiving data");
         while let Ok((read, fin)) = conn.stream_recv(0, buf) {
             trace!(
                 "{} received {} bytes from stream {}",
@@ -173,27 +173,23 @@ impl Protocol {
     }
 
     pub fn recv_config(
-        &mut self, conn: &mut Connection, buf: &mut [u8], password: &Option<String>
+        &mut self, conn: &mut Connection, buf: &mut [u8],
+        password: &Option<String>,
     ) -> quiche::Result<()> {
         debug!("receiving test config");
         let s = 0;
         trace!("Reading from stream {}", s);
         match conn.stream_recv(s, buf) {
             Ok((read, _fin)) => {
-                let tc: TestConfig =
-                    match serde_json::from_slice(&buf[..read]) {
-                        Ok(tc) => tc,
-                        Err(e) => {
-                            error!("Serde test config error: {}", e);
-                            conn.close(
-                                true,
-                                0x1,
-                                b"failed parsing test config",
-                            )
+                let tc: TestConfig = match serde_json::from_slice(&buf[..read]) {
+                    Ok(tc) => tc,
+                    Err(e) => {
+                        error!("Serde test config error: {}", e);
+                        conn.close(true, 0x1, b"failed parsing test config")
                             .unwrap();
-                            return Err(quiche::Error::Done);
-                        },
-                    };
+                        return Err(quiche::Error::Done);
+                    },
+                };
 
                 debug!(
                     "Parsed test config: client_sending={}",
@@ -215,21 +211,16 @@ impl Protocol {
                 let ack = TestConfigAck { error: None };
                 let resp = serde_json::to_string(&ack).unwrap();
 
-                let written =
-                    match conn.stream_send(s, resp.as_bytes(), false) {
-                        Ok(v) => v,
+                let written = match conn.stream_send(s, resp.as_bytes(), false) {
+                    Ok(v) => v,
 
-                        Err(quiche::Error::Done) => 0,
+                    Err(quiche::Error::Done) => 0,
 
-                        Err(e) => {
-                            error!(
-                                "{} stream send failed {:?}",
-                                conn.trace_id(),
-                                e
-                            );
-                            return Err(From::from(e));
-                        },
-                    };
+                    Err(e) => {
+                        error!("{} stream send failed {:?}", conn.trace_id(), e);
+                        return Err(From::from(e));
+                    },
+                };
 
                 debug!(
                     "{} wrote TestConfigAck: {} bytes",

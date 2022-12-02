@@ -15,18 +15,18 @@ struct FourTuple {
 
 struct PathStats {
     sent_bytes: u64,
-    recv_bytes: u64,
+    // recv_bytes: u64,
     lost: usize,
-    lost_spurious: usize,
+    // lost_spurious: usize,
 }
 
 impl PathStats {
     fn new() -> Self {
         PathStats {
             sent_bytes: 0,
-            recv_bytes: 0,
+            // recv_bytes: 0,
             lost: 0,
-            lost_spurious: 0,
+            // lost_spurious: 0,
         }
     }
 }
@@ -101,7 +101,10 @@ impl UI {
         // let lost_total = stats.lost - self.lost_prev;
 
         for (_i, pstat) in conn.path_stats().enumerate() {
-            let key = FourTuple{local_addr: pstat.local_addr, peer_addr:pstat.peer_addr};
+            let key = FourTuple {
+                local_addr: pstat.local_addr,
+                peer_addr: pstat.peer_addr,
+            };
             let pstat_prev = match self.paths.get_mut(&key) {
                 Some(v) => v,
                 None => {
@@ -111,13 +114,11 @@ impl UI {
             };
 
             // let ptput = pstat.delivery_rate as f32 * 8.0 / 1e6;
-            let ptput = (pstat.sent_bytes - pstat_prev.sent_bytes) as f32 * 8.0 / 1e6;
+            let ptput =
+                (pstat.sent_bytes - pstat_prev.sent_bytes) as f32 * 8.0 / 1e6;
             let plost = pstat.lost - pstat_prev.lost;
 
-            pstr.push_str(&format!(
-                "| {:<10.2} | {:<10}",
-                ptput, plost
-            ));
+            pstr.push_str(&format!("| {:<10.2} | {:<10}", ptput, plost));
 
             pstat_prev.sent_bytes = pstat.sent_bytes;
             pstat_prev.lost = pstat.lost;
@@ -125,7 +126,9 @@ impl UI {
 
         println!(
             "{:<5} | {:<10.2} {}",
-            self.start.elapsed().as_secs(), tput_total, pstr
+            self.start.elapsed().as_secs(),
+            tput_total,
+            pstr
         );
 
         self.last_update = Some(Instant::now());
@@ -136,8 +139,10 @@ impl UI {
     pub fn print_summary(&mut self, conn: &quiche::Connection) {
         let stats = conn.stats();
 
-
-        let tput_total = (stats.sent_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6;
+        let tput_total = (stats.sent_bytes as f32 /
+            self.start.elapsed().as_secs_f32()) *
+            8.0 /
+            1e6;
         let lost_perc = (stats.lost as f32 / stats.sent as f32) * 100.0;
 
         println!(

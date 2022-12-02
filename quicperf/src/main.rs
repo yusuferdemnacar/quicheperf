@@ -24,12 +24,6 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// use quiche_apps::args::*;
-
-// use quiche_apps::common::*;
-
-// use quiche_apps::client::*;
-
 #[macro_use]
 extern crate log;
 extern crate serde;
@@ -42,7 +36,7 @@ mod server;
 mod ui;
 
 use std::net::SocketAddr;
-use std::process::{ExitCode};
+use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::protocol::TestConfig;
@@ -97,10 +91,8 @@ fn main() -> ExitCode {
             eprintln!("Error loading private key from {}: {}", key, e);
             return ExitCode::FAILURE;
         };
-        
-        
-        server::listen(local_addrs, password, config);
 
+        server::listen(local_addrs, password, config);
     } else if args.get_bool("client") {
         if local_addrs.len() != peer_addrs.len() {
             eprintln!("Same number of local and peer addresses expected. One path will be created per pair.");
@@ -146,7 +138,9 @@ pub fn make_quiche_config() -> quiche::Config {
     //     )
     //     .unwrap();
 
-    config.set_application_protos(&common::QUICPERF_ALPN).unwrap();
+    config
+        .set_application_protos(&common::QUICPERF_ALPN)
+        .unwrap();
 
     config.set_max_idle_timeout(30_000); // in ms
     config.set_max_recv_udp_payload_size(common::MAX_DATAGRAM_SIZE);
