@@ -289,21 +289,13 @@ pub fn listen(
                 client.max_datagram_size =
                     client.conn.max_send_udp_payload_size();
 
-                // TODO: handle quicperf requests
-                if client.protocol.is_some() {
-                    let protocol = client.protocol.as_mut().unwrap();
+                if let Some(protocol) = client.protocol.as_mut() {
                     if !protocol.config_acked {
-                        if protocol
+                        protocol
                             .recv_config(&mut client.conn, &mut buf, &password)
-                            .is_err()
-                        {
-                            continue 'read;
-                        }
-                    } else if protocol
-                        .recv_data(&mut client.conn, &mut buf)
-                        .is_err()
-                    {
-                        continue 'read;
+                            .ok();
+                    } else {
+                        protocol.work(&mut client.conn, &mut buf).ok();
                     }
                 }
 

@@ -242,18 +242,12 @@ pub fn connect(
                     ui.print_summary(&conn);
                 }
                 if !protocol.config_sent {
-                    if protocol.send_config(&mut conn, &tc).is_err() {
-                        continue;
-                    }
+                    protocol.send_config(&mut conn, &tc).ok();
                 } else if !protocol.config_acked {
-                    if protocol.recv_config_ack(&mut conn, &mut buf).is_err() {
-                        continue;
-                    }
+                    protocol.recv_config_ack(&mut conn, &mut buf).ok();
                 }
                 if protocol.config_acked {
-                    if protocol.send_data(&mut conn).is_err() {
-                        continue;
-                    }
+                    protocol.work(&mut conn, &mut buf).ok();
                 }
             }
         }

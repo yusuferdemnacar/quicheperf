@@ -44,13 +44,14 @@ use crate::protocol::TestConfig;
 
 const USAGE: &'static str = "
 Usage: quicperf server [-p <password>] --cert <cert> --key <key> (-l <local_addr>)...
-       quicperf client [-d <duration> -p <password>] (-l <local_addr>)... (-c <peer_addr>)...
+       quicperf client [-d <duration> -p <password> --reverse] (-l <local_addr>)... (-c <peer_addr>)...
        quicperf -h | --help
 
 --cert <cert>                           Path to the server certificate
 --key <key>                             Path to the certificate's private key
 -d <duration>, --duration=<duration>    Time in seconds to run test for [default: 10]
 -p <password>, --password=<password>    Password required to start test
+-r, --reverse                           Send data from server to client
 ";
 
 fn main() -> ExitCode {
@@ -135,9 +136,11 @@ fn main() -> ExitCode {
             local_addrs: local_addrs_arg.iter().map(|s| s.to_string()).collect(),
             peer_addrs: peer_addrs_arg.iter().map(|s| s.to_string()).collect(),
             password,
-            client_sending: true,
+            client_sending: !args.get_bool("--reverse"),
             duration: Duration::from_secs(duration),
         };
+
+        info!("TestConfig={:?}", tc);
 
         let config = make_quiche_config();
 

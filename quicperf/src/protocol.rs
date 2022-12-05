@@ -40,6 +40,22 @@ impl Protocol {
         }
     }
 
+    pub fn work(
+        &mut self, conn: &mut Connection, buf: &mut [u8],
+    ) -> quiche::Result<()> {
+        if !self.config_acked {
+            return Err(quiche::Error::Done);
+        }
+        let tc = self.tc.as_ref().unwrap();
+        let send_data = (tc.client_sending && self.config_sent) ||
+            (!tc.client_sending && !self.config_sent);
+        if send_data {
+            self.send_data(conn)
+        } else {
+            self.recv_data(conn, buf)
+        }
+    }
+
     pub fn close_after_duration(&self, conn: &mut Connection) -> bool {
         let duration = match (&self.tc, self.start) {
             (Some(tc), Some(start)) => tc
