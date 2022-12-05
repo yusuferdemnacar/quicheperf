@@ -2,6 +2,11 @@ use ring::rand::SecureRandom;
 use std::fs::File;
 use std::io;
 
+use std::sync::Arc;
+use std::sync::Mutex;
+use synchronized_writer::SynchronizedWriter;
+use zstd::stream::Encoder;
+
 pub const MAX_BUF_SIZE: usize = 65507;
 
 pub const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -39,7 +44,7 @@ pub fn set_qlog(
         let start_time = chrono::Local::now();
 
         let mut path = std::path::PathBuf::from(dir);
-        let filename = format!("{}-{}.sqlog", scid, role);
+        let filename = format!("{}-{}.sqlog.zstd", scid, role);
         path.push(filename);
 
         let writer = match std::fs::File::create(&path) {
@@ -49,6 +54,14 @@ pub fn set_qlog(
                 path, e
             ),
         };
+
+        let mut writer = match Encoder::new(writer, 0) {
+            Ok(v) => v,
+            Err(e) => panic!("Error creating zstd qlog encoder: {}", e),
+        };
+        writer.multithread(1).unwrap();
+        let writer = Encoder::auto_finish(writer);
+        let writer = SynchronizedWriter::new(Arc::new(Mutex::new(writer)));
 
         let peer_addr = match peer_addr {
             Some(s) => format!(" peer_addr={}", s),
