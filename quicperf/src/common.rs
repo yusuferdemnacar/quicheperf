@@ -30,6 +30,7 @@ pub fn set_txtime_sockopt(sock: &mio::net::UdpSocket) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "qlog")]
 pub fn set_qlog(
     conn: &mut quiche::Connection, scid: String, role: &str,
     peer_addr: Option<String>,

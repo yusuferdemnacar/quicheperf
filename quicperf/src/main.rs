@@ -62,8 +62,9 @@ fn main() -> ExitCode {
     let docopt = docopt::Docopt::new(USAGE).unwrap();
     let args = docopt.parse().unwrap_or_else(|e| e.exit());
 
-    let local_addrs: Vec<SocketAddr> = match args
-        .get_vec("<local_addr>")
+    let local_addrs_arg = args.get_vec("<local_addr>");
+    let local_addrs = match local_addrs_arg
+        .clone()
         .into_iter()
         .map(|a| a.parse())
         .collect()
@@ -75,8 +76,9 @@ fn main() -> ExitCode {
         },
     };
 
-    let peer_addrs: Vec<SocketAddr> = match args
-        .get_vec("<peer_addr>")
+    let peer_addrs_arg = args.get_vec("<peer_addr>");
+    let peer_addrs = match peer_addrs_arg
+        .clone()
         .into_iter()
         .map(|a| match a.to_socket_addrs() {
             Err(e) => Err(format!("Failed to resolve {}: {:?}", a, e)),
@@ -93,7 +95,10 @@ fn main() -> ExitCode {
     {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Failed to process peer_addr: {:?}\nPort number missing?", e);
+            eprintln!(
+                "Failed to process peer_addr: {:?}\nPort number missing?",
+                e
+            );
             return ExitCode::FAILURE;
         },
     };
@@ -127,6 +132,8 @@ fn main() -> ExitCode {
         let duration = args.get_str("--duration").parse::<u64>().unwrap();
 
         let tc = TestConfig {
+            local_addrs: local_addrs_arg.iter().map(|s| s.to_string()).collect(),
+            peer_addrs: peer_addrs_arg.iter().map(|s| s.to_string()).collect(),
             password,
             client_sending: true,
             duration: Duration::from_secs(duration),

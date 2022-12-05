@@ -9,6 +9,9 @@ pub const SEND_DATA: [u8; 65507] = [0; 65507];
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TestConfig {
+    pub local_addrs: Vec<String>,
+    pub peer_addrs: Vec<String>,
+
     pub password: Option<String>,
     pub client_sending: bool,
     pub duration: Duration,

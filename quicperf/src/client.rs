@@ -88,6 +88,12 @@ pub fn connect(
             "client",
             peer_addrs_str,
         );
+
+        let tc_str = serde_json::to_string(&tc).unwrap();
+        conn.add_qlog_event(qlog::events::Event::with_time(
+            0.0,
+            qlog::events::EventData::Message { message: tc_str },
+        ));
     }
 
     info!(
