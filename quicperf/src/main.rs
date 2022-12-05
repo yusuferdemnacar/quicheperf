@@ -36,6 +36,7 @@ mod server;
 mod ui;
 
 use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -61,17 +62,41 @@ fn main() -> ExitCode {
     let docopt = docopt::Docopt::new(USAGE).unwrap();
     let args = docopt.parse().unwrap_or_else(|e| e.exit());
 
-    let local_addrs: Vec<SocketAddr> = args
+    let local_addrs: Vec<SocketAddr> = match args
         .get_vec("<local_addr>")
         .into_iter()
-        .filter_map(|a| a.parse().ok())
-        .collect();
+        .map(|a| a.parse())
+        .collect()
+    {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Failed parsing local addresses: {e}");
+            return ExitCode::FAILURE;
+        },
+    };
 
-    let peer_addrs: Vec<SocketAddr> = args
+    let peer_addrs: Vec<SocketAddr> = match args
         .get_vec("<peer_addr>")
         .into_iter()
-        .filter_map(|a| a.parse().ok())
-        .collect();
+        .map(|a| match a.to_socket_addrs() {
+            Err(e) => Err(format!("Failed to resolve {}: {:?}", a, e)),
+            Ok(it) => {
+                let resolved: Vec<SocketAddr> = it.collect();
+                info!("Resolved {} to {:?}", a, resolved);
+                match resolved.iter().filter(|a| a.is_ipv4()).nth(0) {
+                    Some(v) => Ok(v.to_owned()),
+                    None => Err(format!("No IPv4 address of {}", a)),
+                }
+            },
+        })
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Failed to process peer_addr: {:?}\nPort number missing?", e);
+            return ExitCode::FAILURE;
+        },
+    };
 
     let password = match args.get_str("--password") {
         "" => None,
