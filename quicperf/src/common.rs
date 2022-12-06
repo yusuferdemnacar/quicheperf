@@ -52,10 +52,12 @@ pub fn set_qlog(
     peer_addr: Option<String>,
 ) {
     if let Some(dir) = std::env::var_os("QLOGDIR") {
-        let start_time = chrono::Local::now();
+        let local_time = chrono::Local::now();
+        let utc_time: chrono::DateTime<chrono::Utc> = chrono::DateTime::from(local_time);
 
         let mut path = std::path::PathBuf::from(dir);
-        let filename = format!("{}-{}.sqlog.zstd", scid, role);
+        let day = utc_time.format("%y%m%dT%H%M%S");
+        let filename = format!("{}-{}-{}.sqlog.zstd", day, scid, role);
         path.push(filename);
 
         let writer = match std::fs::File::create(&path) {
@@ -85,7 +87,7 @@ pub fn set_qlog(
             format!(
                 "quicperf id={} start_time={}{}",
                 scid,
-                start_time.to_rfc3339(),
+                local_time.to_rfc3339(),
                 peer_addr
             ),
         );
