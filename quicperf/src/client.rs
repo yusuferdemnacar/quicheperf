@@ -16,7 +16,7 @@ pub fn connect(
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
-    let mut ui = ui::UI::new();
+    let mut ui = ui::UI::new(tc.client_sending);
     ui.new_test(&local_addrs, &peer_addrs, &tc);
 
     let mut sockets = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));

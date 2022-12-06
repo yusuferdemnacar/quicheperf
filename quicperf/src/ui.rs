@@ -15,40 +15,44 @@ struct FourTuple {
 
 struct PathStats {
     sent_bytes: u64,
-    // recv_bytes: u64,
+    recv_bytes: u64,
     lost: usize,
-    // lost_spurious: usize,
+    lost_spurious: usize,
 }
 
 impl PathStats {
     fn new() -> Self {
         PathStats {
             sent_bytes: 0,
-            // recv_bytes: 0,
+            recv_bytes: 0,
             lost: 0,
-            // lost_spurious: 0,
+            lost_spurious: 0,
         }
     }
 }
 
 pub struct UI {
+    client_sending: bool,
     start: Instant,
     last_update: Option<Instant>,
 
-    sent_bytes_prev: u64,
-    lost_prev: usize,
+    sent_bytes: u64,
+    recv_bytes: u64,
+    lost: usize,
 
     paths: HashMap<FourTuple, PathStats>,
 }
 
 impl UI {
-    pub fn new() -> Self {
+    pub fn new(client_sending: bool) -> Self {
         UI {
+            client_sending,
             start: Instant::now(),
             last_update: None,
 
-            sent_bytes_prev: 0,
-            lost_prev: 0,
+            sent_bytes: 0,
+            recv_bytes: 0,
+            lost: 0,
 
             paths: HashMap::new(),
         }
@@ -83,8 +87,8 @@ impl UI {
     pub fn update(&mut self, conn: &quiche::Connection) {
         if self.last_update.is_none() {
             println!(
-                "{:<5} | {:<10} | {:<10} | {:<10}",
-                "sec", "Mbps", "P0 Mbps", "P0 Lost",
+                "{:<5} | {:<10} | {:<10} | {:<10} | {:<10}",
+                "sec", "Mbps", "P0 Mbps", "P0 Lost", "P0 Spur.",
             )
         }
         if self.last_update.is_some() &&
@@ -96,9 +100,14 @@ impl UI {
         let mut pstr = String::new();
 
         let stats = conn.stats();
-        let tput_total =
-            (stats.sent_bytes - self.sent_bytes_prev) as f32 * 8.0 / 1e6;
-        // let lost_total = stats.lost - self.lost_prev;
+        let tput_sent = (stats.sent_bytes - self.sent_bytes) as f32 * 8.0 / 1e6;
+        let tput_recv = (stats.recv_bytes - self.recv_bytes) as f32 * 8.0 / 1e6;
+        let tput = if self.client_sending {
+            tput_sent
+        } else {
+            tput_recv
+        };
+        // let lost_total = stats.lost - self.lost;
 
         for (_i, pstat) in conn.path_stats().enumerate() {
             let key = FourTuple {
@@ -113,27 +122,40 @@ impl UI {
                 },
             };
 
-            // let ptput = pstat.delivery_rate as f32 * 8.0 / 1e6;
-            let ptput =
+            let ptput_sent =
                 (pstat.sent_bytes - pstat_prev.sent_bytes) as f32 * 8.0 / 1e6;
+            let ptput_recv =
+                (pstat.recv_bytes - pstat_prev.recv_bytes) as f32 * 8.0 / 1e6;
+            let ptput = if self.client_sending {
+                ptput_sent
+            } else {
+                ptput_recv
+            };
             let plost = pstat.lost - pstat_prev.lost;
+            let plost_spurious = pstat.lost_spurious - pstat_prev.lost_spurious;
 
-            pstr.push_str(&format!("| {:<10.2} | {:<10}", ptput, plost));
+            pstr.push_str(&format!(
+                "| {:<10.2} | {:<10} | {:<10}",
+                ptput, plost, plost_spurious
+            ));
 
             pstat_prev.sent_bytes = pstat.sent_bytes;
+            pstat_prev.recv_bytes = pstat.recv_bytes;
             pstat_prev.lost = pstat.lost;
+            pstat_prev.lost_spurious = pstat.lost_spurious;
         }
 
         println!(
             "{:<5} | {:<10.2} {}",
             self.start.elapsed().as_secs(),
-            tput_total,
+            tput,
             pstr
         );
 
         self.last_update = Some(Instant::now());
-        self.sent_bytes_prev = stats.sent_bytes;
-        self.lost_prev = stats.lost;
+        self.sent_bytes = stats.sent_bytes;
+        self.recv_bytes = stats.recv_bytes;
+        self.lost = stats.lost;
     }
 
     pub fn print_summary(&mut self, conn: &quiche::Connection) {
