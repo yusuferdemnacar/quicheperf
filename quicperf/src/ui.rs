@@ -12,8 +12,9 @@ struct FourTuple {
     local_addr: SocketAddr,
     peer_addr: SocketAddr,
 }
-
 struct PathStats {
+    sent: usize,
+    recv: usize,
     sent_bytes: u64,
     recv_bytes: u64,
     lost: usize,
@@ -23,6 +24,8 @@ struct PathStats {
 impl PathStats {
     fn new() -> Self {
         PathStats {
+            sent: 0,
+            recv: 0,
             sent_bytes: 0,
             recv_bytes: 0,
             lost: 0,
@@ -36,6 +39,8 @@ pub struct UI {
     start: Instant,
     last_update: Option<Instant>,
 
+    sent: usize,
+    recv: usize,
     sent_bytes: u64,
     recv_bytes: u64,
     lost: usize,
@@ -50,6 +55,8 @@ impl UI {
             start: Instant::now(),
             last_update: None,
 
+            sent: 0,
+            recv: 0,
             sent_bytes: 0,
             recv_bytes: 0,
             lost: 0,
@@ -87,8 +94,8 @@ impl UI {
     pub fn update(&mut self, conn: &quiche::Connection) {
         if self.last_update.is_none() {
             println!(
-                "{:<5} | {:<10} | {:<10} | {:<10} | {:<10}",
-                "sec", "Mbps", "P0 Mbps", "P0 Lost", "P0 Spur.",
+                "| {:<3} | {:<10} | {:<10} | {:<10} |",
+                "sec", "P0 Mbps", "P0 Lost/Total", "P0 Spurious",
             )
         }
         if self.last_update.is_some() &&
@@ -109,12 +116,20 @@ impl UI {
         };
         // let lost_total = stats.lost - self.lost;
 
-        for (_i, pstat) in conn.path_stats().enumerate() {
+        let packets_sent = stats.sent - self.sent;
+        let packets_recv = stats.recv - self.recv;
+        let _packets = if self.client_sending {
+            packets_sent
+        } else {
+            packets_recv
+        };
+
+        for (_i, pstats) in conn.path_stats().enumerate() {
             let key = FourTuple {
-                local_addr: pstat.local_addr,
-                peer_addr: pstat.peer_addr,
+                local_addr: pstats.local_addr,
+                peer_addr: pstats.peer_addr,
             };
-            let pstat_prev = match self.paths.get_mut(&key) {
+            let pstats_prev = match self.paths.get_mut(&key) {
                 Some(v) => v,
                 None => {
                     self.paths.insert(key, PathStats::new());
@@ -123,39 +138,56 @@ impl UI {
             };
 
             let ptput_sent =
-                (pstat.sent_bytes - pstat_prev.sent_bytes) as f32 * 8.0 / 1e6;
+                (pstats.sent_bytes - pstats_prev.sent_bytes) as f32 * 8.0 / 1e6;
             let ptput_recv =
-                (pstat.recv_bytes - pstat_prev.recv_bytes) as f32 * 8.0 / 1e6;
+                (pstats.recv_bytes - pstats_prev.recv_bytes) as f32 * 8.0 / 1e6;
             let ptput = if self.client_sending {
                 ptput_sent
             } else {
                 ptput_recv
             };
-            let plost = pstat.lost - pstat_prev.lost;
-            let plost_spurious = pstat.lost_spurious - pstat_prev.lost_spurious;
+
+            let packets_sent = pstats.sent - pstats_prev.sent;
+            let packets_recv = pstats.recv - pstats_prev.recv;
+            let packets = if self.client_sending {
+                packets_sent
+            } else {
+                packets_recv
+            };
+
+            let plost = pstats.lost - pstats_prev.lost;
+            let plost_spurious = pstats.lost_spurious - pstats_prev.lost_spurious;
 
             pstr.push_str(&format!(
-                "| {:<10.2} | {:<10} | {:<10}",
-                ptput, plost, plost_spurious
+                "| {:>10.2} | {:>5} /{:>6} | {:>11}",
+                ptput, plost, packets, plost_spurious
             ));
 
-            pstat_prev.sent_bytes = pstat.sent_bytes;
-            pstat_prev.recv_bytes = pstat.recv_bytes;
-            pstat_prev.lost = pstat.lost;
-            pstat_prev.lost_spurious = pstat.lost_spurious;
+            pstats_prev.sent_bytes = pstats.sent_bytes;
+            pstats_prev.recv_bytes = pstats.recv_bytes;
+            pstats_prev.lost = pstats.lost;
+            pstats_prev.lost_spurious = pstats.lost_spurious;
+            pstats_prev.sent = pstats.sent;
+            pstats_prev.recv = pstats.recv;
         }
 
-        println!(
-            "{:<5} | {:<10.2} {}",
-            self.start.elapsed().as_secs(),
-            tput,
-            pstr
-        );
+        if conn.path_stats().count() < 2 {
+            println!("| {:>3} {} |", self.start.elapsed().as_secs(), pstr);
+        } else {
+            println!(
+                "| {:>3} | {:>10.2} {} |",
+                self.start.elapsed().as_secs(),
+                tput,
+                pstr
+            );
+        }
 
         self.last_update = Some(Instant::now());
         self.sent_bytes = stats.sent_bytes;
         self.recv_bytes = stats.recv_bytes;
         self.lost = stats.lost;
+        self.sent = stats.sent;
+        self.recv = stats.recv;
     }
 
     pub fn print_summary(&mut self, conn: &quiche::Connection) {
@@ -168,7 +200,7 @@ impl UI {
         let lost_perc = (stats.lost as f32 / stats.sent as f32) * 100.0;
 
         println!(
-            "{:<5} | {:<10.2} | {:.4}% packet loss",
+            "| {:>3} | {:>10.2} | {:>12.4}% |",
             "Avg", tput_total, lost_perc
         );
     }

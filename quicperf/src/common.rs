@@ -105,6 +105,7 @@ pub fn qlog_metadata(
             message: metadata_str,
         },
     ));
+    info!("{:?}", metadata);
 }
 
 /// Generate a new pair of Source Connection ID and reset token.

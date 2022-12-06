@@ -132,7 +132,7 @@ pub fn connect(
             poll.poll(&mut events, timeout).unwrap();
         }
 
-        if !conn.is_closed() && !conn.is_draining() {
+        if !conn.is_closed() && !conn.is_draining() && protocol.is_some() {
             ui.update(&conn);
         }
 
