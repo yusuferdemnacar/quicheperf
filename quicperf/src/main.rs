@@ -43,10 +43,12 @@ use std::time::Duration;
 use crate::protocol::TestConfig;
 
 const USAGE: &'static str = "
-Usage: quicperf server [-p <password>] --cert <cert> --key <key> (-l <local_addr>)...
-       quicperf client [-d <duration> -p <password> --reverse] (-l <local_addr>)... (-c <peer_addr>)...
+Usage: quicperf server [-p <password>] --cert <cert> --key <key> [-l <local_addr>]...
+       quicperf client [-d <duration> -p <password> --reverse] [-l <local_addr>]... (-c <peer_addr>)...
        quicperf -h | --help
 
+-l <local_addr>                         The local address(es) to connect from [default: 0.0.0.0:0]
+-c <peer_addr>                          The remote address(es) to connect to
 --cert <cert>                           Path to the server certificate
 --key <key>                             Path to the certificate's private key
 -d <duration>, --duration=<duration>    Time in seconds to run test for [default: 10]
@@ -63,23 +65,17 @@ fn main() -> ExitCode {
     let docopt = docopt::Docopt::new(USAGE).unwrap();
     let args = docopt.parse().unwrap_or_else(|e| e.exit());
 
-    let local_addrs_arg = args.get_vec("<local_addr>");
-    let local_addrs = match local_addrs_arg
-        .clone()
-        .into_iter()
-        .map(|a| a.parse())
-        .collect()
-    {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Failed parsing local addresses: {e}");
-            return ExitCode::FAILURE;
-        },
-    };
+    let local_addrs =
+        match args.get_vec("-l").into_iter().map(|a| a.parse()).collect() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("Failed parsing local addresses: {e}");
+                return ExitCode::FAILURE;
+            },
+        };
 
-    let peer_addrs_arg = args.get_vec("<peer_addr>");
-    let peer_addrs = match peer_addrs_arg
-        .clone()
+    let peer_addrs = match args
+        .get_vec("-c")
         .into_iter()
         .map(|a| match a.to_socket_addrs() {
             Err(e) => Err(format!("Failed to resolve {}: {:?}", a, e)),
@@ -126,15 +122,27 @@ fn main() -> ExitCode {
         server::listen(local_addrs, password, config);
     } else if args.get_bool("client") {
         if local_addrs.len() != peer_addrs.len() {
-            eprintln!("Same number of local and peer addresses expected. One path will be created per pair.");
+            eprintln!(
+                "Same number of local and peer addresses expected. One path will be created per pair.\n\
+                local_addrs={:?}, peer_addrs={:?}",
+                args.get_vec("-l"), args.get_vec("-c")
+            );
             return ExitCode::FAILURE;
         }
 
         let duration = args.get_str("--duration").parse::<u64>().unwrap();
 
         let tc = TestConfig {
-            local_addrs: local_addrs_arg.iter().map(|s| s.to_string()).collect(),
-            peer_addrs: peer_addrs_arg.iter().map(|s| s.to_string()).collect(),
+            local_addrs: args
+                .get_vec("-l")
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            peer_addrs: args
+                .get_vec("-c")
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             password,
             client_sending: !args.get_bool("--reverse"),
             duration: Duration::from_secs(duration),
