@@ -43,8 +43,8 @@ use std::time::Duration;
 use crate::protocol::TestConfig;
 
 const USAGE: &'static str = "
-Usage: quicperf server [-p <password>] --cert <cert> --key <key> [-l <local_addr>]...
-       quicperf client [-d <duration> -p <password> --reverse] [-l <local_addr>]... (-c <peer_addr>)...
+Usage: quicperf server [-p <password> --cc <cc>] --cert <cert> --key <key> [-l <local_addr>]...
+       quicperf client [-d <duration> -p <password> --reverse --cc <cc>] [-l <local_addr>]... (-c <peer_addr>)...
        quicperf -h | --help
 
 -l <local_addr>                         The local address(es) to connect from [default: 0.0.0.0:0]
@@ -54,6 +54,7 @@ Usage: quicperf server [-p <password>] --cert <cert> --key <key> [-l <local_addr
 -d <duration>, --duration=<duration>    Time in seconds to run test for [default: 10]
 -p <password>, --password=<password>    Password required to start test
 -r, --reverse                           Send data from server to client
+--cc=<cc>                               Set congestion control algorithm of this peer: Reno, CUBIC, or BBR. [default: cubic]
 ";
 
 fn main() -> ExitCode {
@@ -105,8 +106,15 @@ fn main() -> ExitCode {
         s => Some(s.to_string()),
     };
 
+    let mut config = make_quiche_config();
+    if let Err(e) =
+        config.set_cc_algorithm_name(args.get_str("--cc").to_lowercase().as_ref())
+    {
+        eprintln!("Could not set CCA {}: {}", args.get_str("--cc"), e);
+        return ExitCode::FAILURE;
+    };
+
     if args.get_bool("server") {
-        let mut config = make_quiche_config();
         let cert = args.get_str("--cert");
         if let Err(e) = config.load_cert_chain_from_pem_file(cert) {
             eprintln!("Error loading certificate from {}: {}", cert, e);
@@ -147,10 +155,6 @@ fn main() -> ExitCode {
             client_sending: !args.get_bool("--reverse"),
             duration: Duration::from_secs(duration),
         };
-
-        info!("TestConfig={:?}", tc);
-
-        let config = make_quiche_config();
 
         return match client::connect(local_addrs, peer_addrs, tc, config) {
             Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
