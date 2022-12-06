@@ -21,6 +21,7 @@ pub const QUICPERF_ALPN: [&[u8]; 2] = [b"quicperf", b"quicperf-00"];
 pub struct TestMetadata {
     pub test_config: TestConfig,
     pub cc_algorithm: String,
+    pub version: String,
 }
 
 /// Set SO_TXTIME socket option.
@@ -97,6 +98,7 @@ pub fn qlog_metadata(
     let metadata = TestMetadata {
         test_config: tc.clone(),
         cc_algorithm: config.get_cc_algorithm_name(),
+        version: super::TESTAMENT.to_string(),
     };
     let metadata_str = serde_json::to_string(&metadata).unwrap();
     conn.add_qlog_event(qlog::events::Event::with_time(

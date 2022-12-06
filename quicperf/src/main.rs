@@ -40,11 +40,16 @@ use std::net::ToSocketAddrs;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use git_testament::git_testament;
+
 use crate::protocol::TestConfig;
+
+git_testament!(TESTAMENT);
 
 const USAGE: &'static str = "
 Usage: quicperf server [-p <password> --cc <cc>] --cert <cert> --key <key> [-l <local_addr>]...
        quicperf client [-d <duration> -p <password> --reverse --cc <cc>] [-l <local_addr>]... (-c <peer_addr>)...
+       quicperf version
        quicperf -h | --help
 
 -l <local_addr>                         The local address(es) to connect from [default: 0.0.0.0:0]
@@ -167,6 +172,8 @@ fn main() -> ExitCode {
 
             Ok(_) => ExitCode::SUCCESS,
         };
+    } else if args.get_bool("version") {
+        println!("{}", TESTAMENT);
     }
 
     ExitCode::FAILURE
