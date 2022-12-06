@@ -126,7 +126,7 @@ pub fn connect(
     // connection over it.
     let mut probed_paths = 1;
 
-    loop {
+    'outer: loop {
         if !conn.is_in_early_data() || protocol.is_some() {
             let timeout = std::cmp::min(conn.timeout(), ui.timeout());
             poll.poll(&mut events, timeout).unwrap();
@@ -193,27 +193,7 @@ pub fn connect(
         trace!("done reading");
 
         if conn.is_closed() {
-            info!(
-                "connection closed, {:?} {:?}",
-                conn.stats(),
-                conn.path_stats().collect::<Vec<quiche::PathStats>>()
-            );
-
-            if !conn.is_established() {
-                error!(
-                    "connection timed out after {:?}",
-                    app_data_start.elapsed(),
-                );
-
-                return Err(ClientError::HandshakeFail);
-            }
-
-            // TODO: close custom connection
-            // if let Some(si_conn) = siduck_conn {
-            //     si_conn.report_incomplete(&app_data_start);
-            // }
-
-            break;
+            break 'outer;
         }
 
         // Create a new application protocol session once the QUIC connection is
@@ -232,11 +212,10 @@ pub fn connect(
         }
 
         if let Some(protocol) = protocol.as_mut() {
-            if !conn.is_closed() && !conn.is_draining() {
-                if protocol.close_after_duration(&mut conn) {
-                    // Closed connection
-                    ui.print_summary(&conn);
-                }
+            if !conn.is_closed() &&
+                !conn.is_draining() &&
+                !protocol.close_after_duration(&mut conn)
+            {
                 if !protocol.config_sent {
                     protocol.send_config(&mut conn, &tc).ok();
                 } else if !protocol.config_acked {
@@ -350,29 +329,30 @@ pub fn connect(
         }
 
         if conn.is_closed() {
-            info!(
-                "connection closed, {:?} {:?}",
-                conn.stats(),
-                conn.path_stats().collect::<Vec<quiche::PathStats>>()
-            );
-
-            if !conn.is_established() {
-                error!(
-                    "connection timed out after {:?}",
-                    app_data_start.elapsed(),
-                );
-
-                return Err(ClientError::HandshakeFail);
-            }
-
-            // TODO
-            // if let Some(si_conn) = siduck_conn {
-            //     si_conn.report_incomplete(&app_data_start);
-            // }
-
-            break;
+            break 'outer;
         }
     }
+
+    info!(
+        "connection closed, {:?} {:?}",
+        conn.stats(),
+        conn.path_stats().collect::<Vec<quiche::PathStats>>()
+    );
+
+    if !conn.is_established() {
+        error!("connection timed out after {:?}", app_data_start.elapsed(),);
+
+        return Err(ClientError::HandshakeFail);
+    }
+
+    if protocol.is_some() {
+        ui.print_summary(&conn);
+    }
+
+    // TODO
+    // if let Some(si_conn) = siduck_conn {
+    //     si_conn.report_incomplete(&app_data_start);
+    // }
 
     Ok(())
 }
