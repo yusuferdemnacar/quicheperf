@@ -57,7 +57,7 @@ pub fn set_qlog(
 
         let mut path = std::path::PathBuf::from(dir);
         let day = utc_time.format("%y%m%dT%H%M%S");
-        let filename = format!("{}-{}-{}.sqlog.zstd", day, scid, role);
+        let filename = format!("{}-{}-{}.sqlog.zst", day, scid, role);
         path.push(filename);
 
         let writer = match std::fs::File::create(&path) {
