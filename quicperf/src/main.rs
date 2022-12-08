@@ -47,9 +47,9 @@ use crate::protocol::TestConfig;
 git_testament!(TESTAMENT);
 
 const USAGE: &'static str = "
-Usage: quicperf server [-p <password> --cc <cc>] --cert <cert> --key <key> [-l <local_addr>]...
-       quicperf client [-d <duration> -p <password> --reverse --cc <cc>] [-l <local_addr>]... (-c <peer_addr>)...
-       quicperf version
+Usage: quicperf server [-p <password> --cc <cc> --mp <multipath>] --cert <cert> --key <key> [-l <local_addr>]...
+       quicperf client [-d <duration> -p <password> --reverse --cc <cc> --mp <multipath>] [-l <local_addr>]... (-c <peer_addr>)...
+       quicperf version [--mp <multipath>]
        quicperf -h | --help
 
 -l <local_addr>                         The local address(es) to connect from [default: 0.0.0.0:0]
@@ -59,7 +59,10 @@ Usage: quicperf server [-p <password> --cc <cc>] --cert <cert> --key <key> [-l <
 -d <duration>, --duration=<duration>    Time in seconds to run test for [default: 10]
 -p <password>, --password=<password>    Password required to start test
 -r, --reverse                           Send data from server to client
---cc=<cc>                               Set congestion control algorithm of this peer: Reno, CUBIC, or BBR. [default: cubic]
+--cc=<cc>                               Set congestion control algorithm of this peer: Reno, CUBIC, or BBR [default: cubic]
+--mp=<multipath>                        Enable or disable multipath (true or false)
+
+Multipath is automatically enabled if more than one <local_addr> is present.
 ";
 
 fn main() -> ExitCode {
@@ -71,7 +74,7 @@ fn main() -> ExitCode {
     let docopt = docopt::Docopt::new(USAGE).unwrap();
     let args = docopt.parse().unwrap_or_else(|e| e.exit());
 
-    let local_addrs =
+    let local_addrs: Vec<SocketAddr> =
         match args.get_vec("-l").into_iter().map(|a| a.parse()).collect() {
             Ok(v) => v,
             Err(e) => {
@@ -118,6 +121,14 @@ fn main() -> ExitCode {
         eprintln!("Could not set CCA {}: {}", args.get_str("--cc"), e);
         return ExitCode::FAILURE;
     };
+
+    // get_bool(--mp) -> is the flag present?
+    let implicitely_mp = !args.get_bool("--mp") && local_addrs.len() > 1;
+    let explicitly_mp = args.get_str("--mp").to_lowercase() == "true";
+    if implicitely_mp || explicitly_mp {
+        config.set_multipath(true);
+        info!("Enabled multipath");
+    }
 
     if args.get_bool("server") {
         let cert = args.get_str("--cert");
@@ -210,7 +221,7 @@ pub fn make_quiche_config() -> quiche::Config {
     config.set_max_ack_delay(25); // quiche default
     config.set_active_connection_id_limit(5);
     config.set_disable_active_migration(false);
-    config.set_multipath(true);
+    config.set_multipath(false);
 
     config.set_cc_algorithm_name("cubic").unwrap();
 
