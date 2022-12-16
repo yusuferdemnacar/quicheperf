@@ -47,6 +47,8 @@ pub fn listen(
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
 
+    let mut enable_gso = true;
+
     let mut addrs = Vec::new();
     for src_addr in local_addrs {
         let socket = mio::net::UdpSocket::bind(src_addr).unwrap();
@@ -54,8 +56,9 @@ pub fn listen(
 
         match set_txtime_sockopt(&socket) {
             Ok(_) => debug!("successfully set SO_TXTIME socket option"),
-            Err(e) => error!("setsockopt failed {:?}", e),
+            Err(e) => error!("set SO_TXTIME socket option failed {:?}", e),
         };
+        enable_gso &= sendto::detect_gso(&socket, MAX_DATAGRAM_SIZE);
 
         let token = sockets.insert(socket);
         src_addrs.insert(local_addr, token);
@@ -415,7 +418,7 @@ pub fn listen(
                 &dst_info,
                 client.max_datagram_size,
                 pacing,
-                true,
+                enable_gso,
             ) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
                     trace!("send() would block");
