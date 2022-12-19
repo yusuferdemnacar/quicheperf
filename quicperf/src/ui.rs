@@ -92,16 +92,33 @@ impl UI {
     }
 
     pub fn update(&mut self, conn: &quiche::Connection) {
-        if self.last_update.is_none() {
-            println!(
-                "| {:<3} | {:<10} | {:<10} | {:<10} |",
-                "sec", "P0 Mbps", "P0 Lost/Total", "P0 Spurious",
-            )
-        }
         if self.last_update.is_some() &&
             self.last_update.unwrap().elapsed() <= Duration::from_secs(1)
         {
             return;
+        }
+
+        let npaths = conn.path_stats().count();
+        if self.last_update.is_none() || self.paths.len() < npaths {
+            info!("{}, {}", self.paths.len(), npaths);
+            if npaths < 2 {
+                println!(
+                    "| {:<3} | {:<10} | {:<18} |",
+                    "sec", "P0 Mbps", "P0 Lost/Total (sp)",
+                );
+            } else {
+                let mut pstr = String::new();
+                for i in 0..npaths {
+                    pstr.push_str(&format!(
+                        "| P{}  Mbps   | P{} Lost/Total (sp) ",
+                        i, i));
+                }
+
+                println!(
+                    "| {:<3} | {:<10} {}|",
+                    "sec", "Total Mbps", pstr,
+                );
+            }
         }
 
         let mut pstr = String::new();
@@ -137,14 +154,10 @@ impl UI {
                 },
             };
 
-            let ptput_sent =
-                (pstats.sent_bytes - pstats_prev.sent_bytes) as f32 * 8.0 / 1e6;
-            let ptput_recv =
-                (pstats.recv_bytes - pstats_prev.recv_bytes) as f32 * 8.0 / 1e6;
             let ptput = if self.client_sending {
-                ptput_sent
+                (pstats.sent_bytes - pstats_prev.sent_bytes) as f32 * 8.0 / 1e6
             } else {
-                ptput_recv
+                (pstats.recv_bytes - pstats_prev.recv_bytes) as f32 * 8.0 / 1e6
             };
 
             let packets_sent = pstats.sent - pstats_prev.sent;
@@ -159,7 +172,7 @@ impl UI {
             let plost_spurious = pstats.lost_spurious - pstats_prev.lost_spurious;
 
             pstr.push_str(&format!(
-                "| {:>10.2} | {:>5} /{:>6} | {:>11}",
+                "| {:>10.2} | {:>5} /{:>6} ({:>2}) ",
                 ptput, plost, packets, plost_spurious
             ));
 
@@ -171,11 +184,11 @@ impl UI {
             pstats_prev.recv = pstats.recv;
         }
 
-        if conn.path_stats().count() < 2 {
-            println!("| {:>3} {} |", self.start.elapsed().as_secs(), pstr);
+        if npaths < 2 {
+            println!("| {:>3} {}|", self.start.elapsed().as_secs(), pstr);
         } else {
             println!(
-                "| {:>3} | {:>10.2} {} |",
+                "| {:>3} | {:>10.2} {}|",
                 self.start.elapsed().as_secs(),
                 tput,
                 pstr
@@ -193,15 +206,37 @@ impl UI {
     pub fn print_summary(&mut self, conn: &quiche::Connection) {
         let stats = conn.stats();
 
-        let tput_total = (stats.sent_bytes as f32 /
-            self.start.elapsed().as_secs_f32()) *
-            8.0 /
-            1e6;
+        let tput_total = (stats.sent_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6;
         let lost_perc = (stats.lost as f32 / stats.sent as f32) * 100.0;
 
-        println!(
-            "| {:>3} | {:>10.2} | {:>12.4}% |",
-            "Avg", tput_total, lost_perc
-        );
+        let mut pstr = String::new();
+        for (_i, pstats) in conn.path_stats().enumerate() {
+
+            let ptput = if self.client_sending {
+                (pstats.sent_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6
+            } else {
+                (pstats.recv_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6
+            };
+
+            let plost_perc = (pstats.lost as f32 / pstats.sent as f32) * 100.0;
+
+            pstr.push_str(&format!(
+                "| {:>10.2} | {:>17.4}% ",
+                ptput, plost_perc
+            ));
+        }
+
+        if conn.path_stats().count() < 2 {
+            println!(
+                "| {:>3} | {:>10.2} | {:>17.4}% |",
+                "Avg", tput_total, lost_perc
+            );
+        } else {
+            println!(
+                "| {:>3} | {:>10.2} {}|",
+                "Avg", tput_total, pstr
+            );
+
+        }
     }
 }
