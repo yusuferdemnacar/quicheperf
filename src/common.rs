@@ -137,7 +137,7 @@ pub fn configure_keylog() -> Option<File> {
     None
 }
 
-/// Generate a ordered list of 4-tuples on which the host should send packets,
+/* /// Generate a ordered list of 4-tuples on which the host should send packets,
 /// following a lowest-latency scheduling.
 pub fn lowest_latency_scheduler(
     conn: &quiche::Connection,
@@ -146,4 +146,4 @@ pub fn lowest_latency_scheduler(
     conn.path_stats()
         .sorted_by_key(|p| p.rtt)
         .map(|p| (p.local_addr, p.peer_addr))
-}
+} */

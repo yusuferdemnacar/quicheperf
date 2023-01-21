@@ -47,8 +47,8 @@ impl Protocol {
             return Err(quiche::Error::Done);
         }
         let tc = self.tc.as_ref().unwrap();
-        let send_data = (tc.client_sending && self.config_sent) ||
-            (!tc.client_sending && !self.config_sent);
+        let send_data = (tc.client_sending && self.config_sent)
+            || (!tc.client_sending && !self.config_sent);
         if send_data {
             self.send_data(conn)
         } else {
@@ -215,11 +215,18 @@ impl Protocol {
                     tc.client_sending
                 );
 
-                if !match (password, &tc.password) {
-                    (Some(exp), Some(rcvd)) => exp == rcvd,
-                    (Some(_), None) => false,
-                    (None, _) => true,
-                } {
+                fn pw_eq<T>(expected: &Option<T>, received: &Option<T>) -> bool
+                where
+                    T: PartialEq,
+                {
+                    match (expected, received) {
+                        (None, _) => true,
+                        (Some(v1), Some(v2)) => v1 == v2,
+                        _ => false,
+                    }
+                }
+
+                if !pw_eq(password, &tc.password) {
                     info!("Authentication failed, closing connection");
                     match conn.close(true, 0x10, b"authentication failed") {
                         Ok(_) | Err(quiche::Error::Done) => return Ok(()),

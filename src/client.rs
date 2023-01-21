@@ -4,15 +4,18 @@ use crate::protocol::Protocol;
 use crate::protocol::TestConfig;
 use crate::ui;
 use itertools::Itertools;
+use quiche::scheduler::MultipathScheduler;
 use ring::rand::*;
 use slab::Slab;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::Instant;
 
 pub fn connect(
     local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: TestConfig,
-    mut config: quiche::Config,
+    mut config: quiche::Config, mut scheduler: impl MultipathScheduler,
 ) -> Result<(), ClientError> {
+    dbg!(&scheduler);
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
@@ -129,7 +132,13 @@ pub fn connect(
     'outer: loop {
         if !conn.is_in_early_data() || protocol.is_some() {
             let timeout = std::cmp::min(conn.timeout(), ui.timeout());
+            let poll_wait = Instant::now();
             poll.poll(&mut events, timeout).unwrap();
+            log::debug!(
+                "poll duration= {:?} events_empty= {}",
+                poll_wait.elapsed(),
+                events.is_empty()
+            );
         }
 
         if !conn.is_closed() && !conn.is_draining() && protocol.is_some() {
@@ -198,8 +207,8 @@ pub fn connect(
 
         // Create a new application protocol session once the QUIC connection is
         // established.
-        if (conn.is_established() || conn.is_in_early_data()) &&
-            protocol.is_none()
+        if (conn.is_established() || conn.is_in_early_data())
+            && protocol.is_none()
         {
             let app_proto = conn.application_proto();
 
@@ -212,9 +221,9 @@ pub fn connect(
         }
 
         if let Some(protocol) = protocol.as_mut() {
-            if !conn.is_closed() &&
-                !conn.is_draining() &&
-                !protocol.close_after_duration(&mut conn)
+            if !conn.is_closed()
+                && !conn.is_draining()
+                && !protocol.close_after_duration(&mut conn)
             {
                 if !protocol.config_sent {
                     protocol.send_config(&mut conn, &tc).ok();
@@ -268,63 +277,61 @@ pub fn connect(
         }
 
         // Determine in which order we are going to iterate over paths.
-        let scheduled_tuples = lowest_latency_scheduler(&conn);
+        // let scheduled_tuples = lowest_latency_scheduler(&conn);
 
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
-        for (local_addr, peer_addr) in scheduled_tuples {
-            let token = src_addrs[&local_addr];
-            let socket = &sockets[token];
-            loop {
-                let (write, send_info) = match conn.send_on_path(
-                    &mut out,
-                    Some(local_addr),
-                    Some(peer_addr),
-                ) {
-                    Ok(v) => v,
+        while let Some((local_addr, peer_addr)) = scheduler.get_best_path(&conn) {
+            let (write, send_info) = match conn.send_on_path(
+                &mut out,
+                Some(local_addr),
+                Some(peer_addr),
+            ) {
+                // let (write, send_info) = match conn.send(&mut out) {
+                Ok(v) => v,
 
-                    Err(quiche::Error::Done) => {
-                        trace!(
-                            "{} -> {}: done writing to conn",
-                            local_addr,
-                            peer_addr
-                        );
-                        break;
-                    },
-
-                    Err(e) => {
-                        error!(
-                            "{} -> {}: conn.send failed: {:?}",
-                            local_addr, peer_addr, e
-                        );
-
-                        conn.close(false, 0x1, b"fail").ok();
-                        break;
-                    },
-                };
-
-                if let Err(e) = socket.send_to(&out[..write], send_info.to) {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        trace!(
-                            "{} -> {}: socket.send() would block",
-                            local_addr,
-                            send_info.to
-                        );
-                        break;
-                    }
-
-                    return Err(ClientError::Other(format!(
-                        "{} -> {}: send() failed: {:?}",
-                        local_addr, send_info.to, e
-                    )));
-                } else {
+                Err(quiche::Error::Done) => {
                     trace!(
-                        "{} -> {}: {} bytes written to socket",
+                        "{} -> {}: done writing to conn",
                         local_addr,
-                        send_info.to,
-                        write
+                        peer_addr
                     );
+                    break;
+                },
+                Err(e) => {
+                    error!(
+                        "{} -> {}: conn.send failed: {:?}",
+                        local_addr, peer_addr, e
+                    );
+
+                    conn.close(false, 0x1, b"fail").ok();
+                    break;
+                },
+            };
+
+            let token = src_addrs[&send_info.from];
+            let socket = &sockets[token];
+
+            if let Err(e) = socket.send_to(&out[..write], send_info.to) {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    debug!(
+                        "{} -> {}: socket.send() would block",
+                        local_addr, send_info.to
+                    );
+                    break;
                 }
+
+                return Err(ClientError::Other(format!(
+                    "{} -> {}: send() failed: {:?}",
+                    local_addr, send_info.to, e
+                )));
+            } else {
+                trace!(
+                    "{} -> {}: {} bytes written to socket",
+                    local_addr,
+                    send_info.to,
+                    write
+                );
             }
         }
 

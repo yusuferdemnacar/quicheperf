@@ -51,6 +51,7 @@ pub fn listen(
 
     let mut addrs = Vec::new();
     for src_addr in local_addrs {
+        println!("listening on {:?}", src_addr);
         let socket = mio::net::UdpSocket::bind(src_addr).unwrap();
         let local_addr = socket.local_addr().unwrap();
 

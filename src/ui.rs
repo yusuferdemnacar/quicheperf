@@ -7,11 +7,13 @@ use itertools::Itertools;
 
 use crate::protocol::TestConfig;
 
-#[derive(PartialEq, Eq, Hash, Copy, Clone)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 struct FourTuple {
     local_addr: SocketAddr,
     peer_addr: SocketAddr,
 }
+
+#[derive(Debug)]
 struct PathStats {
     sent: usize,
     recv: usize,
@@ -34,6 +36,7 @@ impl PathStats {
     }
 }
 
+#[derive(Debug)]
 pub struct UI {
     client_sending: bool,
     start: Instant,
