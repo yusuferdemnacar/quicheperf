@@ -9,6 +9,7 @@ use ring::rand::*;
 use slab::Slab;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::Duration;
 use std::time::Instant;
 
 pub fn connect(
@@ -131,10 +132,18 @@ pub fn connect(
 
     'outer: loop {
         if !conn.is_in_early_data() || protocol.is_some() {
-            let timeout = std::cmp::min(conn.timeout(), ui.timeout());
+            let timeout =
+                std::cmp::min(conn.timeout(), ui.timeout()).or(conn.timeout());
             let poll_wait = Instant::now();
+            log::trace!(
+                "poll_timeout= {}",
+                timeout
+                    .as_ref()
+                    .map(|x| Duration::as_millis(x))
+                    .unwrap_or(0)
+            );
             poll.poll(&mut events, timeout).unwrap();
-            log::debug!(
+            log::trace!(
                 "poll duration= {:?} events_empty= {}",
                 poll_wait.elapsed(),
                 events.is_empty()
@@ -287,7 +296,6 @@ pub fn connect(
                 Some(local_addr),
                 Some(peer_addr),
             ) {
-                // let (write, send_info) = match conn.send(&mut out) {
                 Ok(v) => v,
 
                 Err(quiche::Error::Done) => {
@@ -308,6 +316,47 @@ pub fn connect(
                     break;
                 },
             };
+
+            let token = src_addrs[&send_info.from];
+            let socket = &sockets[token];
+
+            if let Err(e) = socket.send_to(&out[..write], send_info.to) {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    debug!(
+                        "{} -> {}: socket.send() would block",
+                        local_addr, send_info.to
+                    );
+                    break;
+                }
+
+                return Err(ClientError::Other(format!(
+                    "{} -> {}: send() failed: {:?}",
+                    local_addr, send_info.to, e
+                )));
+            } else {
+                trace!(
+                    "{} -> {}: {} bytes written to socket",
+                    local_addr,
+                    send_info.to,
+                    write
+                );
+            }
+        }
+
+        let path_stats: Vec<_> = conn
+            .path_stats()
+            .map(|p| (p.local_addr, p.peer_addr))
+            .collect();
+        for (l, p) in path_stats {
+            let (write, send_info) =
+                match conn.send_on_path(&mut out, Some(l), Some(p)) {
+                    Ok(v) => v,
+                    Err(quiche::Error::Done) => break,
+                    Err(_) => {
+                        conn.close(false, 0x1, b"fail").ok();
+                        break;
+                    },
+                };
 
             let token = src_addrs[&send_info.from];
             let socket = &sockets[token];
