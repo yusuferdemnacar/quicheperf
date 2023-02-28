@@ -48,8 +48,8 @@ use crate::protocol::TestConfig;
 git_testament!(TESTAMENT);
 
 const USAGE: &'static str = "
-Usage: quicperf server [-p <password>] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-initial-connection-window=<bytes> --fc-initial-stream-window=<bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int>] --cert <cert> --key <key> [-l <local_addr>]...
-       quicperf client [-d <duration> -p <password> --reverse] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-initial-connection-window=<bytes> --fc-initial-stream-window=<bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int>] [-l <local_addr>]... (-c <peer_addr>)...
+Usage: quicperf server [-p <password>] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-initial-connection-window=<bytes> --fc-initial-stream-window=<bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int> --hystart=<bool>] --cert <cert> --key <key> [-l <local_addr>]...
+       quicperf client [-d <duration> -p <password> --reverse] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-initial-connection-window=<bytes> --fc-initial-stream-window=<bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int> --hystart=<bool>] [-l <local_addr>]... (-c <peer_addr>)...
        quicperf version
        quicperf -h | --help
 
@@ -73,6 +73,7 @@ QUIC options:
 --fc-autotune-strategy=<strategy>       Set the flow control autotuning strategy [default: reactive]
 --fc-autotune-increase-factor=<int>     When autotuning, increase the window by this factor [default: 2].
 --fc-reactive-rtt-trigger-factor=<int>  Reactive autotune if last update within factor * RTT [default: 2].
+--hystart=<bool>                        Enable or disable hystart [default: true]
 
 Multipath is automatically enabled if more than one <local_addr> is present.
 ";
@@ -280,7 +281,8 @@ pub fn make_quiche_config(args: &ArgvMap, local_addrs_len: usize) -> Result<quic
         return Err(ExitCode::FAILURE);
     };
 
-    config.enable_hystart(true);
+    let enable_hystart = args.get_str("--hystart").to_lowercase() == "true";
+    config.enable_hystart(enable_hystart);
     config.enable_pacing(true);
 
     config.enable_dgram(false, 1000, 1000);
