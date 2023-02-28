@@ -228,8 +228,8 @@ impl UI {
 
         if conn.path_stats().count() < 2 {
             println!(
-                "| {:>3} | {:>10.2} | {:>17.4}% |",
-                "Avg", tput_total, lost_perc
+                "| {:>3} | {:>10.2} | {:>5} {:>11.4}% |",
+                "Avg", tput_total, stats.lost, lost_perc
             );
         } else {
             println!(
