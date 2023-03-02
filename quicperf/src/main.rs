@@ -48,8 +48,8 @@ use crate::protocol::TestConfig;
 git_testament!(TESTAMENT);
 
 const USAGE: &'static str = "
-Usage: quicperf server [-p <password>] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes>] --cert <cert> --key <key> [-l <local_addr>]...
-       quicperf client [-d <duration> -p <password> --reverse] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes>] [-l <local_addr>]... (-c <peer_addr>)...
+Usage: quicperf server [-p <password>] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-window-update-threshold=<perc>] --cert <cert> --key <key> [-l <local_addr>]...
+       quicperf client [-d <duration> -p <password> --reverse] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-window-update-threshold=<perc>] [-l <local_addr>]... (-c <peer_addr>)...
        quicperf version
        quicperf -h | --help
 
@@ -67,6 +67,7 @@ QUIC options:
 --mp=<multipath>                        Enable or disable multipath (true or false).
 --max-data=<bytes>                      Initial connection-wide flow control limit [default: 25165824].
 --max-stream-data=<bytes>               Initial per-stream flow control limit [default: 1000000].
+--fc-window-update-threshold=<perc>     Set the flow control window update threshold in percent (0-100) [default: 50].
 
 Multipath is automatically enabled if more than one <local_addr> is present.
 ";
@@ -124,6 +125,10 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(exitcode) => return exitcode,
     };
+
+    let fc_wut = args.get_str("--fc-window-update-threshold").parse::<u64>().unwrap();
+    config.set_fc_window_update_threshold(fc_wut);
+
     info!("config={:?}", config);
 
     if args.get_bool("server") {
