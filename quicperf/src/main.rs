@@ -40,6 +40,7 @@ use std::net::ToSocketAddrs;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use docopt::ArgvMap;
 use git_testament::git_testament;
 
 use crate::protocol::TestConfig;
@@ -47,20 +48,25 @@ use crate::protocol::TestConfig;
 git_testament!(TESTAMENT);
 
 const USAGE: &'static str = "
-Usage: quicperf server [-p <password> --cc <cc> --mp <multipath>] --cert <cert> --key <key> [-l <local_addr>]...
-       quicperf client [-d <duration> -p <password> --reverse --cc <cc> --mp <multipath>] [-l <local_addr>]... (-c <peer_addr>)...
-       quicperf version [--mp <multipath>]
+Usage: quicperf server [-p <password>] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes>] --cert <cert> --key <key> [-l <local_addr>]...
+       quicperf client [-d <duration> -p <password> --reverse] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes>] [-l <local_addr>]... (-c <peer_addr>)...
+       quicperf version
        quicperf -h | --help
 
--l <local_addr>                         The local address(es) to connect from [default: 0.0.0.0:0]
--c <peer_addr>                          The remote address(es) to connect to
---cert <cert>                           Path to the server certificate
---key <key>                             Path to the certificate's private key
--d <duration>, --duration=<duration>    Time in seconds to run test for [default: 10]
--p <password>, --password=<password>    Password required to start test
--r, --reverse                           Send data from server to client
---cc=<cc>                               Set congestion control algorithm of this peer: Reno, CUBIC, BBR, or Constant [default: cubic]
---mp=<multipath>                        Enable or disable multipath (true or false)
+Test options:
+-l <local_addr>                         The local address(es) to connect from [default: 0.0.0.0:0].
+-c <peer_addr>                          The remote address(es) to connect to.
+--cert <cert>                           Path to the server certificate.
+--key <key>                             Path to the certificate's private key.
+-d <duration>, --duration=<duration>    Time in seconds to run test for [default: 10].
+-p <password>, --password=<password>    Password required to start test.
+-r, --reverse                           Send data from server to client.
+
+QUIC options:
+--cc=<cc>                               Set congestion control algorithm of this peer: Reno, CUBIC, BBR, or Constant [default: cubic].
+--mp=<multipath>                        Enable or disable multipath (true or false).
+--max-data=<bytes>                      Initial connection-wide flow control limit [default: 25165824].
+--max-stream-data=<bytes>               Initial per-stream flow control limit [default: 1000000].
 
 Multipath is automatically enabled if more than one <local_addr> is present.
 ";
@@ -114,25 +120,11 @@ fn main() -> ExitCode {
         s => Some(s.to_string()),
     };
 
-    let mut config = make_quiche_config();
-    if let Ok(cwnd) = args.get_str("--cc").parse::<usize>() {
-        config.set_cc_algorithm_name("constant").unwrap();
-        config.set_constant_cwnd(cwnd);
-        info!("Set constant cwnd={}B", cwnd);
-    } else if let Err(e) =
-        config.set_cc_algorithm_name(args.get_str("--cc").to_lowercase().as_ref())
-    {
-        eprintln!("Could not set CCA {}: {}", args.get_str("--cc"), e);
-        return ExitCode::FAILURE;
+    let mut config = match make_quiche_config(&args, local_addrs.len()) {
+        Ok(v) => v,
+        Err(exitcode) => return exitcode,
     };
-
-    // get_bool(--mp) -> is the flag present?
-    let implicitely_mp = !args.get_bool("--mp") && local_addrs.len() > 1;
-    let explicitly_mp = args.get_str("--mp").to_lowercase() == "true";
-    if implicitely_mp || explicitly_mp {
-        config.set_multipath(true);
-        info!("Enabled multipath");
-    }
+    info!("config={:?}", config);
 
     if args.get_bool("server") {
         let cert = args.get_str("--cert");
@@ -194,7 +186,7 @@ fn main() -> ExitCode {
     ExitCode::FAILURE
 }
 
-pub fn make_quiche_config() -> quiche::Config {
+pub fn make_quiche_config(args: &ArgvMap, local_addrs_len: usize) -> Result<quiche::Config, ExitCode> {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
     // config
@@ -214,20 +206,54 @@ pub fn make_quiche_config() -> quiche::Config {
     config.set_max_idle_timeout(30_000); // in ms
     config.set_max_recv_udp_payload_size(common::MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(common::MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(100 * 10_000_000);
-    let max_stream_data = 10 * 16_777_216;
+
+    let max_data = match args.get_str("--max-data").parse::<u64>() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Could not parse --max-data. Must be u64. {}", e);
+            return Err(ExitCode::FAILURE);
+        },
+    };
+    config.set_initial_max_data(max_data);
+
+    let max_stream_data = match args.get_str("--max-stream-data").parse::<u64>() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Could not parse --max-stream-data. Must be u64. {}", e);
+            return Err(ExitCode::FAILURE);
+        },
+    };
     config.set_initial_max_stream_data_bidi_local(max_stream_data);
     config.set_initial_max_stream_data_bidi_remote(max_stream_data);
     config.set_initial_max_stream_data_uni(max_stream_data);
+
     config.set_initial_max_streams_bidi(100);
     config.set_initial_max_streams_uni(100);
     config.set_ack_delay_exponent(3); // quiche default
     config.set_max_ack_delay(25); // quiche default
     config.set_active_connection_id_limit(5);
     config.set_disable_active_migration(false);
-    config.set_multipath(false);
 
-    config.set_cc_algorithm_name("cubic").unwrap();
+    // get_bool(--mp) -> is the flag present?
+    let implicitely_mp = !args.get_bool("--mp") && local_addrs_len > 1;
+    let explicitly_mp = args.get_str("--mp").to_lowercase() == "true";
+    if implicitely_mp || explicitly_mp {
+        config.set_multipath(true);
+        info!("Enabled multipath");
+    } else {
+        config.set_multipath(false);
+    }
+
+    if let Ok(cwnd) = args.get_str("--cc").parse::<usize>() {
+        config.set_cc_algorithm_name("constant").unwrap();
+        config.set_constant_cwnd(cwnd);
+        info!("Set constant cwnd={}B", cwnd);
+    } else if let Err(e) =
+        config.set_cc_algorithm_name(args.get_str("--cc").to_lowercase().as_ref())
+    {
+        eprintln!("Could not set CCA {}: {}", args.get_str("--cc"), e);
+        return Err(ExitCode::FAILURE);
+    };
 
     config.enable_hystart(true);
     config.enable_pacing(true);
@@ -240,5 +266,5 @@ pub fn make_quiche_config() -> quiche::Config {
     // config.set_stateless_reset_token
     // config.set_disable_dcid_reuse
 
-    config
+    Ok(config)
 }
