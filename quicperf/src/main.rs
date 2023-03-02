@@ -48,8 +48,8 @@ use crate::protocol::TestConfig;
 git_testament!(TESTAMENT);
 
 const USAGE: &'static str = "
-Usage: quicperf server [-p <password>] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-window-update-threshold=<perc>] --cert <cert> --key <key> [-l <local_addr>]...
-       quicperf client [-d <duration> -p <password> --reverse] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-window-update-threshold=<perc>] [-l <local_addr>]... (-c <peer_addr>)...
+Usage: quicperf server [-p <password>] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int>] --cert <cert> --key <key> [-l <local_addr>]...
+       quicperf client [-d <duration> -p <password> --reverse] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int>] [-l <local_addr>]... (-c <peer_addr>)...
        quicperf version
        quicperf -h | --help
 
@@ -68,6 +68,9 @@ QUIC options:
 --max-data=<bytes>                      Initial connection-wide flow control limit [default: 25165824].
 --max-stream-data=<bytes>               Initial per-stream flow control limit [default: 1000000].
 --fc-window-update-threshold=<perc>     Set the flow control window update threshold in percent (0-100) [default: 50].
+--fc-autotune-strategy=<strategy>       Set the flow control autotuning strategy [default: reactive]
+--fc-autotune-increase-factor=<int>     When autotuning, increase the window by this factor [default: 2].
+--fc-reactive-rtt-trigger-factor=<int>  Reactive autotune if last update within factor * RTT [default: 2].
 
 Multipath is automatically enabled if more than one <local_addr> is present.
 ";
@@ -126,8 +129,19 @@ fn main() -> ExitCode {
         Err(exitcode) => return exitcode,
     };
 
-    let fc_wut = args.get_str("--fc-window-update-threshold").parse::<u64>().unwrap();
-    config.set_fc_window_update_threshold(fc_wut);
+    config.flow_control_config.window_update_threshold =
+        args.get_str("--fc-window-update-threshold").parse::<u64>().unwrap();
+
+    let fc_strat = args.get_str("--fc-autotune-strategy");
+    if let Err(e) = config.set_fc_autotune_strategy(fc_strat) {
+        eprintln!("Error setting flow control autotune strategy {}: {}", fc_strat, e);
+        return ExitCode::FAILURE;
+    }
+
+    config.flow_control_config.autotune_increase_factor =
+        args.get_str("--fc-autotune-increase-factor").parse::<u64>().unwrap();
+    config.flow_control_config.reactive_rtt_trigger_factor =
+        args.get_str("--fc-reactive-rtt-trigger-factor").parse::<u32>().unwrap();
 
     info!("config={:?}", config);
 
