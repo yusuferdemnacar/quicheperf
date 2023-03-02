@@ -27,8 +27,8 @@ mio = { version = "0.8", features = ["net", "os-poll"] }
 url = "1"
 log = "0.4"
 ring = "0.16"
-quiche = { path = "../quiche" }
-qlog = { path = "../qlog" }
+quiche = { path = "../quiche/quiche" }
+qlog = { path = "../quiche/qlog" }
 libc = "0.2"
 nix = "0"
 slab = "0.4"
