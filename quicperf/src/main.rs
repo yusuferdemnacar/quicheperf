@@ -59,7 +59,7 @@ Usage: quicperf server [-p <password> --cc <cc> --mp <multipath>] --cert <cert> 
 -d <duration>, --duration=<duration>    Time in seconds to run test for [default: 10]
 -p <password>, --password=<password>    Password required to start test
 -r, --reverse                           Send data from server to client
---cc=<cc>                               Set congestion control algorithm of this peer: Reno, CUBIC, or BBR [default: cubic]
+--cc=<cc>                               Set congestion control algorithm of this peer: Reno, CUBIC, BBR, or Constant [default: cubic]
 --mp=<multipath>                        Enable or disable multipath (true or false)
 
 Multipath is automatically enabled if more than one <local_addr> is present.
@@ -115,7 +115,11 @@ fn main() -> ExitCode {
     };
 
     let mut config = make_quiche_config();
-    if let Err(e) =
+    if let Ok(cwnd) = args.get_str("--cc").parse::<usize>() {
+        config.set_cc_algorithm_name("constant").unwrap();
+        config.set_constant_cwnd(cwnd);
+        info!("Set constant cwnd={}B", cwnd);
+    } else if let Err(e) =
         config.set_cc_algorithm_name(args.get_str("--cc").to_lowercase().as_ref())
     {
         eprintln!("Could not set CCA {}: {}", args.get_str("--cc"), e);
