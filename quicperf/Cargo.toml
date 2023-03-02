@@ -1,0 +1,41 @@
+[package]
+name = "quicperf"
+version = "0.1.0"
+authors = ["Hendrik Cech <hendrik.cech@tum.de>"]
+edition = "2018"
+publish = false
+
+[features]
+# Enable quiche's fuzzing mode.
+fuzzing = ["quiche/fuzzing"]
+
+# Enable qlog support.
+qlog = ["quiche/qlog"]
+
+# Use BoringSSL provided by the boring crate.
+boringssl-boring-crate = ["quiche/boringssl-boring-crate"]
+
+# Enable sfv support.
+sfv = ["quiche/sfv"]
+
+default = ["qlog", "sfv"]
+
+[dependencies]
+docopt = "1"
+env_logger = "0.6"
+mio = { version = "0.8", features = ["net", "os-poll"] }
+url = "1"
+log = "0.4"
+ring = "0.16"
+quiche = { path = "../quiche" }
+libc = "0.2"
+nix = "0"
+slab = "0.4"
+itertools = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_derive = "1.0"
+serde_with = "1.3.1"
+
+# [lib]
+# crate-type = ["lib"]
