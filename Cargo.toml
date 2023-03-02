@@ -21,7 +21,6 @@ sfv = ["quiche/sfv"]
 default = ["qlog", "sfv"]
 
 [dependencies]
-docopt = "1"
 env_logger = "0.6"
 mio = { version = "0.8", features = ["net", "os-poll"] }
 url = "1"
@@ -41,6 +40,7 @@ chrono = "0.4.23"
 zstd = { version = "0.12.0", features=["zstdmt"] }
 synchronized-writer = "1.1.11"
 git-testament = "0.2.1"
+clap = { version = "4.1.4", features = ["derive"] }
 
 # [lib]
 # crate-type = ["lib"]

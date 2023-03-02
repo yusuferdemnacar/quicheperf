@@ -28,6 +28,7 @@
 extern crate log;
 extern crate serde;
 
+mod cli;
 mod client;
 mod common;
 mod protocol;
@@ -35,48 +36,17 @@ mod sendto;
 mod server;
 mod ui;
 
-use std::net::SocketAddr;
-use std::net::ToSocketAddrs;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use docopt::ArgvMap;
+use crate::protocol::TestConfig;
+use cli::Args;
 use git_testament::git_testament;
 
-use crate::protocol::TestConfig;
+use clap::Parser;
+use quiche::scheduler;
 
 git_testament!(TESTAMENT);
-
-const USAGE: &'static str = "
-Usage: quicperf server [-p <password>] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-initial-connection-window=<bytes> --fc-initial-stream-window=<bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int> --hystart=<bool>] --cert <cert> --key <key> [-l <local_addr>]...
-       quicperf client [-d <duration> -p <password> --reverse] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-initial-connection-window=<bytes> --fc-initial-stream-window=<bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int> --hystart=<bool>] [-l <local_addr>]... (-c <peer_addr>)...
-       quicperf version
-       quicperf -h | --help
-
-Test options:
--l <local_addr>                         The local address(es) to connect from [default: 0.0.0.0:0].
--c <peer_addr>                          The remote address(es) to connect to.
---cert <cert>                           Path to the server certificate.
---key <key>                             Path to the certificate's private key.
--d <duration>, --duration=<duration>    Time in seconds to run test for [default: 10].
--p <password>, --password=<password>    Password required to start test.
--r, --reverse                           Send data from server to client.
-
-QUIC options:
---cc=<cc>                               Set congestion control algorithm of this peer: Reno, CUBIC, BBR, or Constant [default: cubic].
---mp=<multipath>                        Enable or disable multipath (true or false).
---max-data=<bytes>                      Initial connection-wide flow control limit [default: 25165824].
---max-stream-data=<bytes>               Initial per-stream flow control limit [default: 1000000].
---fc-initial-connection-window=<bytes>  The initial connection window [default: 49152].
---fc-initial-stream-window=<bytes>      The initial stream window [default: 32768].
---fc-window-update-threshold=<perc>     Set the flow control window update threshold in percent (0-100) [default: 50].
---fc-autotune-strategy=<strategy>       Set the flow control autotuning strategy [default: reactive]
---fc-autotune-increase-factor=<int>     When autotuning, increase the window by this factor [default: 2].
---fc-reactive-rtt-trigger-factor=<int>  Reactive autotune if last update within factor * RTT [default: 2].
---hystart=<bool>                        Enable or disable hystart [default: true]
-
-Multipath is automatically enabled if more than one <local_addr> is present.
-";
 
 fn main() -> ExitCode {
     env_logger::builder()
@@ -84,146 +54,110 @@ fn main() -> ExitCode {
         .init();
 
     // Parse CLI parameters.
-    let docopt = docopt::Docopt::new(USAGE).unwrap();
-    let args = docopt.parse().unwrap_or_else(|e| e.exit());
+    let args = cli::Args::parse();
 
-    let local_addrs: Vec<SocketAddr> =
-        match args.get_vec("-l").into_iter().map(|a| a.parse()).collect() {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("Failed parsing local addresses: {e}");
-                return ExitCode::FAILURE;
-            },
-        };
-
-    let peer_addrs = match args
-        .get_vec("-c")
-        .into_iter()
-        .map(|a| match a.to_socket_addrs() {
-            Err(e) => Err(format!("Failed to resolve {}: {:?}", a, e)),
-            Ok(it) => {
-                let resolved: Vec<SocketAddr> = it.collect();
-                info!("Resolved {} to {:?}", a, resolved);
-                match resolved.iter().filter(|a| a.is_ipv4()).nth(0) {
-                    Some(v) => Ok(v.to_owned()),
-                    None => Err(format!("No IPv4 address of {}", a)),
-                }
-            },
-        })
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!(
-                "Failed to process peer_addr: {:?}\nPort number missing?",
-                e
-            );
-            return ExitCode::FAILURE;
-        },
-    };
-
-    let password = match args.get_str("--password") {
-        "" => None,
-        s => Some(s.to_string()),
-    };
-
-    let mut config = match make_quiche_config(&args, local_addrs.len()) {
+    let mut config = match make_quiche_config(&args) {
         Ok(v) => v,
         Err(exitcode) => return exitcode,
     };
-
-    config.flow_control_config.initial_connection_window =
-        args.get_str("--fc-initial-connection-window").parse::<u64>().unwrap();
-    config.flow_control_config.initial_stream_window =
-        args.get_str("--fc-initial-stream-window").parse::<u64>().unwrap();
-    config.flow_control_config.window_update_threshold =
-        args.get_str("--fc-window-update-threshold").parse::<u64>().unwrap();
-    config.flow_control_config.autotune_increase_factor =
-        args.get_str("--fc-autotune-increase-factor").parse::<u64>().unwrap();
-    config.flow_control_config.reactive_rtt_trigger_factor =
-        args.get_str("--fc-reactive-rtt-trigger-factor").parse::<u32>().unwrap();
-
-    let fc_strat = args.get_str("--fc-autotune-strategy");
-    if let Err(e) = config.set_fc_autotune_strategy(fc_strat) {
-        eprintln!("Error setting flow control autotune strategy {}: {}", fc_strat, e);
+    
+    if let Err(e) =
+        config.set_cc_algorithm_name(args.congestion.to_lowercase().as_ref())
+    {
+        eprintln!("Could not set CCA {}: {}", args.congestion, e);
         return ExitCode::FAILURE;
-    }
+    };
 
-
-    info!("config={:?}", config);
-
-    if args.get_bool("server") {
-        let cert = args.get_str("--cert");
-        if let Err(e) = config.load_cert_chain_from_pem_file(cert) {
-            eprintln!("Error loading certificate from {}: {}", cert, e);
-            return ExitCode::FAILURE;
-        };
-
-        let key = args.get_str("--key");
-        if let Err(e) = config.load_priv_key_from_pem_file(key) {
-            eprintln!("Error loading private key from {}: {}", key, e);
-            return ExitCode::FAILURE;
-        };
-
-        server::listen(local_addrs, password, config);
-    } else if args.get_bool("client") {
-        if local_addrs.len() != peer_addrs.len() {
-            eprintln!(
+    match args.commands {
+        cli::Subcommands::Client { peer_addrs, duration, reverse } => {
+            if args.local_addrs.len() != peer_addrs.len() {
+                eprintln!(
                 "Same number of local and peer addresses expected. One path will be created per pair.\n\
                 local_addrs={:?}, peer_addrs={:?}",
-                args.get_vec("-l"), args.get_vec("-c")
+                args.local_addrs, peer_addrs
             );
-            return ExitCode::FAILURE;
-        }
+                return ExitCode::FAILURE;
+            }
 
-        let duration = args.get_str("--duration").parse::<u64>().unwrap();
+            let tc = TestConfig {
+                local_addrs: args
+                    .local_addrs
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                peer_addrs: peer_addrs
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                password: args.password,
+                client_sending: !reverse,
+                duration: Duration::from_secs(duration),
+            };
 
-        let tc = TestConfig {
-            local_addrs: args
-                .get_vec("-l")
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            peer_addrs: args
-                .get_vec("-c")
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            password,
-            client_sending: !args.get_bool("--reverse"),
-            duration: Duration::from_secs(duration),
-        };
+            let res = match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
+                cli::SchedulerOpts::Blest => client::connect(
+                    args.local_addrs,
+                    peer_addrs,
+                    tc,
+                    config,
+                    scheduler::Blest::new(),
+                ),
+                cli::SchedulerOpts::MinRTT => client::connect(
+                    args.local_addrs,
+                    peer_addrs,
+                    tc,
+                    config,
+                    scheduler::MinRTT::new(),
+                ),
+            };
 
-        return match client::connect(local_addrs, peer_addrs, tc, config) {
-            Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
+            return match res {
+                Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
-            // Err(client::ClientError::HttpFail) => std::process::exit(-2),
-            Err(client::ClientError::Other(e)) => {
-                eprintln!("{}", e);
-                ExitCode::FAILURE
-            },
+                // Err(client::ClientError::HttpFail) => std::process::exit(-2),
+                Err(client::ClientError::Other(e)) => {
+                    eprintln!("{}", e);
+                    ExitCode::FAILURE
+                },
 
-            Ok(_) => ExitCode::SUCCESS,
-        };
-    } else if args.get_bool("version") {
-        println!("{}", TESTAMENT);
+                Ok(_) => ExitCode::SUCCESS,
+            };
+        },
+        cli::Subcommands::Server { cert, key, oneshot: _ } => {
+            if let Err(e) =
+                config.load_cert_chain_from_pem_file(cert.to_str().unwrap())
+            {
+                eprintln!("Error loading certificate from {:?}: {}", cert, e);
+                return ExitCode::FAILURE;
+            };
+
+            if let Err(e) =
+                config.load_priv_key_from_pem_file(key.to_str().unwrap())
+            {
+                eprintln!("Error loading private key from {:?}: {}", key, e);
+                return ExitCode::FAILURE;
+            };
+
+            server::listen(args.local_addrs, args.password, config);
+        },
     }
+
+    // TODO: use TESTAMENT when printing version
+    // } else if args.get_bool("version") {
+    //     println!("{}", TESTAMENT);
+    // }
 
     ExitCode::FAILURE
 }
 
-pub fn make_quiche_config(args: &ArgvMap, local_addrs_len: usize) -> Result<quiche::Config, ExitCode> {
-    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
-
-    // config
-    //         "/home/cech/Research/MPQUIC/quiche/quicperf/src/cert.crt",
-    //     )
-    //     .unwrap();
-    // config
-    //     .load_priv_key_from_pem_file(
-    //         "/home/cech/Research/MPQUIC/quiche/quicperf/src/cert.key",
-    //     )
-    //     .unwrap();
+pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
+    let mut config = match quiche::Config::new(quiche::PROTOCOL_VERSION) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Could not create quiche config: {}", e);
+            return Err(ExitCode::FAILURE);
+        }
+    };
 
     config
         .set_application_protos(&common::QUICPERF_ALPN)
@@ -232,26 +166,11 @@ pub fn make_quiche_config(args: &ArgvMap, local_addrs_len: usize) -> Result<quic
     config.set_max_idle_timeout(30_000); // in ms
     config.set_max_recv_udp_payload_size(common::MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(common::MAX_DATAGRAM_SIZE);
+    config.set_initial_max_data(args.max_data);
 
-    let max_data = match args.get_str("--max-data").parse::<u64>() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Could not parse --max-data. Must be u64. {}", e);
-            return Err(ExitCode::FAILURE);
-        },
-    };
-    config.set_initial_max_data(max_data);
-
-    let max_stream_data = match args.get_str("--max-stream-data").parse::<u64>() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Could not parse --max-stream-data. Must be u64. {}", e);
-            return Err(ExitCode::FAILURE);
-        },
-    };
-    config.set_initial_max_stream_data_bidi_local(max_stream_data);
-    config.set_initial_max_stream_data_bidi_remote(max_stream_data);
-    config.set_initial_max_stream_data_uni(max_stream_data);
+    config.set_initial_max_stream_data_bidi_local(args.max_stream_data);
+    config.set_initial_max_stream_data_bidi_remote(args.max_stream_data);
+    config.set_initial_max_stream_data_uni(args.max_stream_data);
 
     config.set_initial_max_streams_bidi(100);
     config.set_initial_max_streams_uni(100);
@@ -261,8 +180,8 @@ pub fn make_quiche_config(args: &ArgvMap, local_addrs_len: usize) -> Result<quic
     config.set_disable_active_migration(false);
 
     // get_bool(--mp) -> is the flag present?
-    let implicitely_mp = !args.get_bool("--mp") && local_addrs_len > 1;
-    let explicitly_mp = args.get_str("--mp").to_lowercase() == "true";
+    let implicitely_mp = !args.multipath && args.local_addrs.len() > 1;
+    let explicitly_mp = args.multipath;
     if implicitely_mp || explicitly_mp {
         config.set_multipath(true);
         info!("Enabled multipath");
@@ -270,19 +189,18 @@ pub fn make_quiche_config(args: &ArgvMap, local_addrs_len: usize) -> Result<quic
         config.set_multipath(false);
     }
 
-    if let Ok(cwnd) = args.get_str("--cc").parse::<usize>() {
+    if let Ok(cwnd) = args.congestion.parse::<usize>() {
         config.set_cc_algorithm_name("constant").unwrap();
         config.set_constant_cwnd(cwnd);
         info!("Set constant cwnd={}B", cwnd);
     } else if let Err(e) =
-        config.set_cc_algorithm_name(args.get_str("--cc").to_lowercase().as_ref())
+        config.set_cc_algorithm_name(args.congestion.as_ref())
     {
-        eprintln!("Could not set CCA {}: {}", args.get_str("--cc"), e);
+        eprintln!("Could not set CCA {}: {}", args.congestion, e);
         return Err(ExitCode::FAILURE);
     };
 
-    let enable_hystart = args.get_str("--hystart").to_lowercase() == "true";
-    config.enable_hystart(enable_hystart);
+    config.enable_hystart(args.hystart);
     config.enable_pacing(true);
 
     config.enable_dgram(false, 1000, 1000);
@@ -292,6 +210,18 @@ pub fn make_quiche_config(args: &ArgvMap, local_addrs_len: usize) -> Result<quic
 
     // config.set_stateless_reset_token
     // config.set_disable_dcid_reuse
+
+    config.flow_control_config.initial_connection_window = args.fc_initial_connection_window;
+    config.flow_control_config.initial_stream_window = args.fc_initial_stream_window;
+    config.flow_control_config.window_update_threshold = args.fc_window_update_threshold;
+    config.flow_control_config.autotune_increase_factor = args.fc_autotune_increase_factor;
+    config.flow_control_config.reactive_rtt_trigger_factor = args.fc_reactive_rtt_trigger_factor;
+
+    if let Err(e) = config.set_fc_autotune_strategy(&args.fc_autotune_strategy) {
+        eprintln!("Error setting flow control autotune strategy {}: {}",
+            args.fc_autotune_strategy, e);
+        return Err(ExitCode::FAILURE);
+    }
 
     Ok(config)
 }
