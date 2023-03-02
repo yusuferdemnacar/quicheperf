@@ -48,8 +48,8 @@ use crate::protocol::TestConfig;
 git_testament!(TESTAMENT);
 
 const USAGE: &'static str = "
-Usage: quicperf server [-p <password>] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int>] --cert <cert> --key <key> [-l <local_addr>]...
-       quicperf client [-d <duration> -p <password> --reverse] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int>] [-l <local_addr>]... (-c <peer_addr>)...
+Usage: quicperf server [-p <password>] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-initial-connection-window=<bytes> --fc-initial-stream-window=<bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int>] --cert <cert> --key <key> [-l <local_addr>]...
+       quicperf client [-d <duration> -p <password> --reverse] [--cc <cc> --mp <multipath> --max-data <bytes> --max-stream-data <bytes> --fc-initial-connection-window=<bytes> --fc-initial-stream-window=<bytes> --fc-window-update-threshold=<perc> --fc-autotune-strategy=<strategy> --fc-autotune-increase-factor=<int> --fc-reactive-rtt-trigger-factor=<int>] [-l <local_addr>]... (-c <peer_addr>)...
        quicperf version
        quicperf -h | --help
 
@@ -67,6 +67,8 @@ QUIC options:
 --mp=<multipath>                        Enable or disable multipath (true or false).
 --max-data=<bytes>                      Initial connection-wide flow control limit [default: 25165824].
 --max-stream-data=<bytes>               Initial per-stream flow control limit [default: 1000000].
+--fc-initial-connection-window=<bytes>  The initial connection window [default: 49152].
+--fc-initial-stream-window=<bytes>      The initial stream window [default: 32768].
 --fc-window-update-threshold=<perc>     Set the flow control window update threshold in percent (0-100) [default: 50].
 --fc-autotune-strategy=<strategy>       Set the flow control autotuning strategy [default: reactive]
 --fc-autotune-increase-factor=<int>     When autotuning, increase the window by this factor [default: 2].
@@ -129,8 +131,16 @@ fn main() -> ExitCode {
         Err(exitcode) => return exitcode,
     };
 
+    config.flow_control_config.initial_connection_window =
+        args.get_str("--fc-initial-connection-window").parse::<u64>().unwrap();
+    config.flow_control_config.initial_stream_window =
+        args.get_str("--fc-initial-stream-window").parse::<u64>().unwrap();
     config.flow_control_config.window_update_threshold =
         args.get_str("--fc-window-update-threshold").parse::<u64>().unwrap();
+    config.flow_control_config.autotune_increase_factor =
+        args.get_str("--fc-autotune-increase-factor").parse::<u64>().unwrap();
+    config.flow_control_config.reactive_rtt_trigger_factor =
+        args.get_str("--fc-reactive-rtt-trigger-factor").parse::<u32>().unwrap();
 
     let fc_strat = args.get_str("--fc-autotune-strategy");
     if let Err(e) = config.set_fc_autotune_strategy(fc_strat) {
@@ -138,10 +148,6 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    config.flow_control_config.autotune_increase_factor =
-        args.get_str("--fc-autotune-increase-factor").parse::<u64>().unwrap();
-    config.flow_control_config.reactive_rtt_trigger_factor =
-        args.get_str("--fc-reactive-rtt-trigger-factor").parse::<u32>().unwrap();
 
     info!("config={:?}", config);
 
