@@ -7,7 +7,7 @@ use serde::Serialize;
 
 pub const SEND_DATA: [u8; 65507] = [0; 65507];
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TestConfig {
     pub local_addrs: Vec<String>,
     pub peer_addrs: Vec<String>,
@@ -26,7 +26,7 @@ pub struct TestConfigAck {
 pub struct Protocol {
     pub config_sent: bool,
     pub config_acked: bool,
-    tc: Option<TestConfig>,
+    pub tc: Option<TestConfig>,
     start: Option<Instant>,
 }
 

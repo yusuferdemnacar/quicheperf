@@ -1,4 +1,6 @@
 use ring::rand::SecureRandom;
+use serde::Deserialize;
+use serde::Serialize;
 use std::fs::File;
 use std::io;
 
@@ -7,11 +9,19 @@ use std::sync::Mutex;
 use synchronized_writer::SynchronizedWriter;
 use zstd::stream::Encoder;
 
+use crate::protocol::TestConfig;
+
 pub const MAX_BUF_SIZE: usize = 65507;
 
 pub const MAX_DATAGRAM_SIZE: usize = 1350;
 
 pub const QUICPERF_ALPN: [&[u8]; 2] = [b"quicperf", b"quicperf-00"];
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct TestMetadata {
+    pub test_config: TestConfig,
+    pub cc_algorithm: String,
+}
 
 /// Set SO_TXTIME socket option.
 ///
@@ -79,6 +89,22 @@ pub fn set_qlog(
             ),
         );
     }
+}
+
+pub fn qlog_metadata(
+    conn: &mut quiche::Connection, tc: &TestConfig, config: &quiche::Config,
+) {
+    let metadata = TestMetadata {
+        test_config: tc.clone(),
+        cc_algorithm: config.get_cc_algorithm_name(),
+    };
+    let metadata_str = serde_json::to_string(&metadata).unwrap();
+    conn.add_qlog_event(qlog::events::Event::with_time(
+        0.0,
+        qlog::events::EventData::Message {
+            message: metadata_str,
+        },
+    ));
 }
 
 /// Generate a new pair of Source Connection ID and reset token.

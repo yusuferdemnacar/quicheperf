@@ -294,6 +294,9 @@ pub fn listen(
                         protocol
                             .recv_config(&mut client.conn, &mut buf, &password)
                             .ok();
+                        if let Some(tc) = &protocol.tc {
+                            common::qlog_metadata(&mut client.conn, tc, &config);
+                        }
                     } else {
                         protocol.work(&mut client.conn, &mut buf).ok();
                     }
