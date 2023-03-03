@@ -89,7 +89,7 @@ pub enum Subcommands {
     /// Run quicperf client
     Client {
         /// The remote address(es) to connect to
-        #[arg(short = 'c', global = true)]
+        #[arg(short = 'c', required = true)]
         peer_addrs: Vec<SocketAddr>,
 
         /// Time in seconds to run test for
