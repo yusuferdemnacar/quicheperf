@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use clap::ArgAction;
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
@@ -9,6 +10,15 @@ use clap::ValueEnum;
 pub enum SchedulerOpts {
     Blest,
     MinRTT,
+}
+
+// Inspired by https://github.com/clap-rs/clap/blob/dd5e6b23131f16ef8b090a8482f1b97c6a693498/clap_derive/examples/true_or_false.rs
+fn parse_bool(s: &str) -> Result<bool, &'static str> {
+    match s {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err("expected `true` or `false`"),
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -24,7 +34,7 @@ pub struct Args {
 
     /// Enable or disable multipath (Automatically enabled if more than one
     /// local_addr is present)
-    #[arg(long = "mp", global = true)]
+    #[arg(long = "mp", global = true, default_value = "false", value_parser=parse_bool, action = ArgAction::Set)]
     pub multipath: bool,
 
     /// Set the multipath scheduler of this peer
@@ -67,7 +77,7 @@ pub struct Args {
     pub fc_reactive_rtt_trigger_factor: u32,
 
     ///  Enable hystart (instead of slow start)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, default_value = "true", value_parser=parse_bool, action = ArgAction::Set)]
     pub hystart: bool,
 
     #[command(subcommand)]
