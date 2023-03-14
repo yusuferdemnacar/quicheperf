@@ -86,7 +86,7 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum Subcommands {
-    /// Run quicperf client
+    /// Run quicheperf client
     Client {
         /// The remote address(es) to connect to
         #[arg(short = 'c', required = true)]
@@ -100,7 +100,7 @@ pub enum Subcommands {
         #[arg(short, long)]
         reverse: bool,
     },
-    /// Run quicperf server
+    /// Run quicheperf server
     Server {
         /// Path to the server certificate
         #[arg(long)]

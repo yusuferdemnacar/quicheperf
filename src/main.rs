@@ -160,7 +160,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     };
 
     config
-        .set_application_protos(&common::QUICPERF_ALPN)
+        .set_application_protos(&common::QUICHEPERF_ALPN)
         .unwrap();
 
     config.set_max_idle_timeout(30_000); // in ms

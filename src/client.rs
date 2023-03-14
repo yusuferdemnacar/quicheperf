@@ -221,8 +221,8 @@ pub fn connect(
         {
             let app_proto = conn.application_proto();
 
-            if QUICPERF_ALPN.contains(&app_proto) {
-                info!("Connection established. Selecting QUICPERF protocol.");
+            if QUICHEPERF_ALPN.contains(&app_proto) {
+                info!("Connection established. Selecting QUICHEPERF protocol.");
                 protocol = Some(Protocol::new());
             } else {
                 warn!("No ALPN matched");

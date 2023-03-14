@@ -15,7 +15,7 @@ pub const MAX_BUF_SIZE: usize = 65507;
 
 pub const MAX_DATAGRAM_SIZE: usize = 1350;
 
-pub const QUICPERF_ALPN: [&[u8]; 2] = [b"quicperf", b"quicperf-00"];
+pub const QUICHEPERF_ALPN: [&[u8]; 2] = [b"quicheperf", b"quicheperf-00"];
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct TestMetadata {
@@ -81,15 +81,16 @@ pub fn set_qlog(
             None => "".to_string(),
         };
 
-        conn.set_qlog(
+        conn.set_qlog_with_level(
             std::boxed::Box::new(writer),
-            "quicperf".to_string(),
+            "quicheperf".to_string(),
             format!(
-                "quicperf id={} start_time={}{}",
+                "quicheperf id={} start_time={}{}",
                 scid,
                 local_time.to_rfc3339(),
                 peer_addr
             ),
+            quiche::QlogLevel::Extra,
         );
     }
 }
