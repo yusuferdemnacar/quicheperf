@@ -22,7 +22,7 @@ fn parse_bool(s: &str) -> Result<bool, &'static str> {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, about, long_about = None, version = super::version())]
 pub struct Args {
     /// Password required to start test
     #[arg(short, long, global = true)]

@@ -101,7 +101,7 @@ pub fn qlog_metadata(
     let metadata = TestMetadata {
         test_config: tc.clone(),
         cc_algorithm: config.get_cc_algorithm_name(),
-        version: super::TESTAMENT.to_string(),
+        version: super::version().into(),
     };
     let metadata_str = serde_json::to_string(&metadata).unwrap();
     conn.add_qlog_event(qlog::events::Event::with_time(

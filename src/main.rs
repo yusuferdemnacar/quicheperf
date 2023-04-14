@@ -41,12 +41,10 @@ use std::time::Duration;
 
 use crate::protocol::TestConfig;
 use cli::Args;
-use git_testament::git_testament;
+use git_testament::git_testament_macros;
 
 use clap::Parser;
 use quiche::scheduler;
-
-git_testament!(TESTAMENT);
 
 fn main() -> ExitCode {
     env_logger::builder()
@@ -142,11 +140,6 @@ fn main() -> ExitCode {
         },
     }
 
-    // TODO: use TESTAMENT when printing version
-    // } else if args.get_bool("version") {
-    //     println!("{}", TESTAMENT);
-    // }
-
     ExitCode::FAILURE
 }
 
@@ -224,4 +217,13 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     }
 
     Ok(config)
+}
+
+git_testament_macros!(version);
+pub const fn version() -> &'static str {
+    concat!(
+        env!("CARGO_PKG_VERSION"),
+        " ",
+        version_testament!(),
+    )
 }
