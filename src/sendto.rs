@@ -47,7 +47,9 @@ pub fn detect_gso(_socket: &mio::net::UdpSocket, _segment_size: usize) -> bool {
 /// Send packets using sendmsg() with GSO.
 #[cfg(target_os = "linux")]
 fn send_to_gso_pacing(
-    socket: &mio::net::UdpSocket, buf: &[u8], send_info: &quiche::SendInfo,
+    socket: &mio::net::UdpSocket,
+    buf: &[u8],
+    send_info: &quiche::SendInfo,
     segment_size: usize,
 ) -> io::Result<usize> {
     use nix::sys::socket::sendmsg;
@@ -80,8 +82,7 @@ fn send_to_gso_pacing(
         )
     };
 
-    let send_time =
-        time_spec.tv_sec as u64 * nanos_per_sec + time_spec.tv_nsec as u64;
+    let send_time = time_spec.tv_sec as u64 * nanos_per_sec + time_spec.tv_nsec as u64;
 
     let cmsg_txtime = ControlMessage::TxTime(&send_time);
 
@@ -100,7 +101,9 @@ fn send_to_gso_pacing(
 /// For non-Linux platforms.
 #[cfg(not(target_os = "linux"))]
 fn send_to_gso_pacing(
-    _socket: &mio::net::UdpSocket, _buf: &[u8], _send_info: &quiche::SendInfo,
+    _socket: &mio::net::UdpSocket,
+    _buf: &[u8],
+    _send_info: &quiche::SendInfo,
     _segment_size: usize,
 ) -> io::Result<usize> {
     panic!("send_to_gso() should not be called on non-linux platforms");
@@ -110,17 +113,21 @@ fn send_to_gso_pacing(
 /// - when GSO and SO_TXTIME enabled, send a packet using send_to_gso().
 /// Otherwise, send packet using socket.send_to().
 pub fn send_to(
-    socket: &mio::net::UdpSocket, buf: &[u8], send_info: &quiche::SendInfo,
-    segment_size: usize, pacing: bool, enable_gso: bool,
+    socket: &mio::net::UdpSocket,
+    buf: &[u8],
+    send_info: &quiche::SendInfo,
+    segment_size: usize,
+    pacing: bool,
+    enable_gso: bool,
 ) -> io::Result<usize> {
     if pacing && enable_gso {
         match send_to_gso_pacing(socket, buf, send_info, segment_size) {
             Ok(v) => {
                 return Ok(v);
-            },
+            }
             Err(e) => {
                 return Err(e);
-            },
+            }
         }
     }
 
@@ -134,7 +141,7 @@ pub fn send_to(
         match socket.send_to(&buf[off..off + pkt_len], send_info.to) {
             Ok(v) => {
                 written += v;
-            },
+            }
             Err(e) => return Err(e),
         }
 

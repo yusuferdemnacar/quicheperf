@@ -40,15 +40,13 @@ impl Protocol {
         }
     }
 
-    pub fn work(
-        &mut self, conn: &mut Connection, buf: &mut [u8],
-    ) -> quiche::Result<()> {
+    pub fn work(&mut self, conn: &mut Connection, buf: &mut [u8]) -> quiche::Result<()> {
         if !self.config_acked {
             return Err(quiche::Error::Done);
         }
         let tc = self.tc.as_ref().unwrap();
-        let send_data = (tc.client_sending && self.config_sent)
-            || (!tc.client_sending && !self.config_sent);
+        let send_data =
+            (tc.client_sending && self.config_sent) || (!tc.client_sending && !self.config_sent);
         if send_data {
             self.send_data(conn)
         } else {
@@ -80,9 +78,7 @@ impl Protocol {
     }
 
     // Called by client to kick off test
-    pub fn send_config(
-        &mut self, conn: &mut Connection, tc: &TestConfig,
-    ) -> quiche::Result<()> {
+    pub fn send_config(&mut self, conn: &mut Connection, tc: &TestConfig) -> quiche::Result<()> {
         trace!("Trying to send test configuration request");
 
         let msg = serde_json::to_string(&tc).unwrap();
@@ -94,7 +90,7 @@ impl Protocol {
             Err(e) => {
                 error!("{} stream send failed {:?}", conn.trace_id(), e);
                 return Err(From::from(e));
-            },
+            }
         };
 
         trace!("Wrote {} bytes", written);
@@ -112,9 +108,7 @@ impl Protocol {
     }
 
     // Called by client after sending TestConfig
-    pub fn recv_config_ack(
-        &mut self, conn: &mut Connection, buf: &mut [u8],
-    ) -> quiche::Result<()> {
+    pub fn recv_config_ack(&mut self, conn: &mut Connection, buf: &mut [u8]) -> quiche::Result<()> {
         info!("receiving test config ack");
 
         while let Ok((read, _fin)) = conn.stream_recv(0, buf) {
@@ -130,7 +124,7 @@ impl Protocol {
                 Err(e) => {
                     error!("Serde error: {}", e);
                     return Err(quiche::Error::Done);
-                },
+                }
             };
 
             if let Some(e) = tca.error {
@@ -156,7 +150,7 @@ impl Protocol {
                 Err(e) => {
                     error!("{} stream send failed {:?}", conn.trace_id(), e);
                     return Err(From::from(e));
-                },
+                }
             };
 
             trace!("Wrote {} bytes", written);
@@ -164,9 +158,7 @@ impl Protocol {
         Ok(())
     }
 
-    pub fn recv_data(
-        &mut self, conn: &mut Connection, buf: &mut [u8],
-    ) -> quiche::Result<()> {
+    pub fn recv_data(&mut self, conn: &mut Connection, buf: &mut [u8]) -> quiche::Result<()> {
         trace!("receiving data");
         while let Ok((read, fin)) = conn.stream_recv(0, buf) {
             trace!(
@@ -192,7 +184,9 @@ impl Protocol {
     }
 
     pub fn recv_config(
-        &mut self, conn: &mut Connection, buf: &mut [u8],
+        &mut self,
+        conn: &mut Connection,
+        buf: &mut [u8],
         password: &Option<String>,
     ) -> quiche::Result<()> {
         debug!("receiving test config");
@@ -207,13 +201,10 @@ impl Protocol {
                         conn.close(true, 0x1, b"failed parsing test config")
                             .unwrap();
                         return Err(quiche::Error::Done);
-                    },
+                    }
                 };
 
-                debug!(
-                    "Parsed test config: client_sending={}",
-                    tc.client_sending
-                );
+                debug!("Parsed test config: client_sending={}", tc.client_sending);
 
                 fn pw_eq<T>(expected: &Option<T>, received: &Option<T>) -> bool
                 where
@@ -245,21 +236,17 @@ impl Protocol {
                     Err(e) => {
                         error!("{} stream send failed {:?}", conn.trace_id(), e);
                         return Err(From::from(e));
-                    },
+                    }
                 };
 
-                debug!(
-                    "{} wrote TestConfigAck: {} bytes",
-                    conn.trace_id(),
-                    written
-                );
+                debug!("{} wrote TestConfigAck: {} bytes", conn.trace_id(), written);
                 self.config_acked = true;
 
                 self.tc = Some(tc);
-            },
+            }
             Err(e) => {
                 debug!("stream_recv error: {}", e)
-            },
+            }
         }
 
         Ok(())

@@ -58,16 +58,18 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(exitcode) => return exitcode,
     };
-    
-    if let Err(e) =
-        config.set_cc_algorithm_name(args.congestion.to_lowercase().as_ref())
-    {
+
+    if let Err(e) = config.set_cc_algorithm_name(args.congestion.to_lowercase().as_ref()) {
         eprintln!("Could not set CCA {}: {}", args.congestion, e);
         return ExitCode::FAILURE;
     };
 
     match args.commands {
-        cli::Subcommands::Client { peer_addrs, duration, reverse } => {
+        cli::Subcommands::Client {
+            peer_addrs,
+            duration,
+            reverse,
+        } => {
             if args.local_addrs.len() != peer_addrs.len() {
                 eprintln!(
                 "Same number of local and peer addresses expected. One path will be created per pair.\n\
@@ -78,15 +80,8 @@ fn main() -> ExitCode {
             }
 
             let tc = TestConfig {
-                local_addrs: args
-                    .local_addrs
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
-                peer_addrs: peer_addrs
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
+                local_addrs: args.local_addrs.iter().map(|s| s.to_string()).collect(),
+                peer_addrs: peer_addrs.iter().map(|s| s.to_string()).collect(),
                 password: args.password,
                 client_sending: !reverse,
                 duration: Duration::from_secs(duration),
@@ -116,28 +111,28 @@ fn main() -> ExitCode {
                 Err(client::ClientError::Other(e)) => {
                     eprintln!("{}", e);
                     ExitCode::FAILURE
-                },
+                }
 
                 Ok(_) => ExitCode::SUCCESS,
             };
-        },
-        cli::Subcommands::Server { cert, key, oneshot: _ } => {
-            if let Err(e) =
-                config.load_cert_chain_from_pem_file(cert.to_str().unwrap())
-            {
+        }
+        cli::Subcommands::Server {
+            cert,
+            key,
+            oneshot: _,
+        } => {
+            if let Err(e) = config.load_cert_chain_from_pem_file(cert.to_str().unwrap()) {
                 eprintln!("Error loading certificate from {:?}: {}", cert, e);
                 return ExitCode::FAILURE;
             };
 
-            if let Err(e) =
-                config.load_priv_key_from_pem_file(key.to_str().unwrap())
-            {
+            if let Err(e) = config.load_priv_key_from_pem_file(key.to_str().unwrap()) {
                 eprintln!("Error loading private key from {:?}: {}", key, e);
                 return ExitCode::FAILURE;
             };
 
             server::listen(args.local_addrs, args.password, config);
-        },
+        }
     }
 
     ExitCode::FAILURE
@@ -186,9 +181,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
         config.set_cc_algorithm_name("constant").unwrap();
         config.set_constant_cwnd(cwnd);
         info!("Set constant cwnd={}B", cwnd);
-    } else if let Err(e) =
-        config.set_cc_algorithm_name(args.congestion.as_ref())
-    {
+    } else if let Err(e) = config.set_cc_algorithm_name(args.congestion.as_ref()) {
         eprintln!("Could not set CCA {}: {}", args.congestion, e);
         return Err(ExitCode::FAILURE);
     };
@@ -211,8 +204,10 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     config.flow_control_config.reactive_rtt_trigger_factor = args.fc_reactive_rtt_trigger_factor;
 
     if let Err(e) = config.set_fc_autotune_strategy(&args.fc_autotune_strategy) {
-        eprintln!("Error setting flow control autotune strategy {}: {}",
-            args.fc_autotune_strategy, e);
+        eprintln!(
+            "Error setting flow control autotune strategy {}: {}",
+            args.fc_autotune_strategy, e
+        );
         return Err(ExitCode::FAILURE);
     }
 
@@ -221,9 +216,5 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
 
 git_testament_macros!(version);
 pub const fn version() -> &'static str {
-    concat!(
-        env!("CARGO_PKG_VERSION"),
-        " ",
-        version_testament!(),
-    )
+    concat!(env!("CARGO_PKG_VERSION"), " ", version_testament!(),)
 }

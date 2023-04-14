@@ -33,10 +33,7 @@ struct Client {
 type ClientIdMap = HashMap<ConnectionId<'static>, ClientId>;
 type ClientMap = HashMap<ClientId, Client>;
 
-pub fn listen(
-    local_addrs: Vec<SocketAddr>, password: Option<String>,
-    mut config: quiche::Config,
-) {
+pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config: quiche::Config) {
     let mut buf = [0; MAX_BUF_SIZE];
     let mut out = [0; MAX_BUF_SIZE];
 
@@ -82,8 +79,7 @@ pub fn listen(
     let mut keylog = configure_keylog();
 
     let rng = SystemRandom::new();
-    let conn_id_seed =
-        ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
+    let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
 
     let mut next_client_id = 0;
     let mut clients_ids = ClientIdMap::new();
@@ -128,7 +124,7 @@ pub fn listen(
                         }
 
                         panic!("recv() from {:} failed: {:?}", local_addr, e);
-                    },
+                    }
                 };
 
                 trace!("{:}->{:}: got {} bytes", from, local_addr, len);
@@ -136,15 +132,12 @@ pub fn listen(
                 let pkt_buf = &mut buf[..len];
 
                 // Parse the QUIC packet's header.
-                let hdr = match quiche::Header::from_slice(
-                    pkt_buf,
-                    quiche::MAX_CONN_ID_LEN,
-                ) {
+                let hdr = match quiche::Header::from_slice(pkt_buf, quiche::MAX_CONN_ID_LEN) {
                     Ok(v) => v,
                     Err(e) => {
                         error!("Parsing packet header failed: {:?}", e);
                         continue 'read;
-                    },
+                    }
                 };
 
                 trace!("got packet {:?}", hdr);
@@ -156,8 +149,8 @@ pub fn listen(
                 // Lookup a connection based on the packet's connection ID. If
                 // there is no connection matching, create a new
                 // one.
-                let client = if !clients_ids.contains_key(&hdr.dcid) &&
-                    !clients_ids.contains_key(&conn_id)
+                let client = if !clients_ids.contains_key(&hdr.dcid)
+                    && !clients_ids.contains_key(&conn_id)
                 {
                     if hdr.ty != quiche::Type::Initial {
                         error!("Packet is not Initial");
@@ -167,10 +160,8 @@ pub fn listen(
                     if !quiche::version_is_supported(hdr.version) {
                         warn!("Doing version negotiation");
 
-                        let len = quiche::negotiate_version(
-                            &hdr.scid, &hdr.dcid, &mut out,
-                        )
-                        .unwrap();
+                        let len =
+                            quiche::negotiate_version(&hdr.scid, &hdr.dcid, &mut out).unwrap();
 
                         let out = &out[..len];
 
@@ -193,14 +184,8 @@ pub fn listen(
                     debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
 
                     #[allow(unused_mut)]
-                    let mut conn = quiche::accept(
-                        &scid,
-                        None,
-                        local_addr,
-                        from,
-                        &mut config,
-                    )
-                    .unwrap();
+                    let mut conn =
+                        quiche::accept(&scid, None, local_addr, from, &mut config).unwrap();
 
                     if let Some(keylog) = &mut keylog {
                         if let Ok(keylog) = keylog.try_clone() {
@@ -210,12 +195,7 @@ pub fn listen(
 
                     // Only bother with qlog if the user specified it.
                     #[cfg(feature = "qlog")]
-                    common::set_qlog(
-                        &mut conn,
-                        format!("{:?}", &hdr.scid),
-                        "server",
-                        None,
-                    );
+                    common::set_qlog(&mut conn, format!("{:?}", &hdr.scid), "server", None);
 
                     let client_id = next_client_id;
 
@@ -259,16 +239,15 @@ pub fn listen(
                     Err(e) => {
                         error!("{} recv failed: {:?}", client.conn.trace_id(), e);
                         continue 'read;
-                    },
+                    }
                 };
 
                 trace!("{} processed {} bytes", client.conn.trace_id(), read);
 
                 // Create a new application protocol session as soon as the QUIC
                 // connection is established.
-                if client.protocol.is_none() &&
-                    (client.conn.is_in_early_data() ||
-                        client.conn.is_established())
+                if client.protocol.is_none()
+                    && (client.conn.is_in_early_data() || client.conn.is_established())
                 {
                     // At this stage the ALPN negotiation succeeded and selected a
                     // single application protocol name. We'll use this to
@@ -290,8 +269,7 @@ pub fn listen(
                 }
 
                 // Update max_datagram_size after connection established.
-                client.max_datagram_size =
-                    client.conn.max_send_udp_payload_size();
+                client.max_datagram_size = client.conn.max_send_udp_payload_size();
 
                 if let Some(protocol) = client.protocol.as_mut() {
                     if !protocol.config_acked {
@@ -336,20 +314,17 @@ pub fn listen(
         continue_write = false;
         for client in clients.values_mut() {
             // Reduce max_send_burst by 25% if loss is increasing more than 0.1%.
-            let loss_rate =
-                client.conn.stats().lost as f64 / client.conn.stats().sent as f64;
+            let loss_rate = client.conn.stats().lost as f64 / client.conn.stats().sent as f64;
             if loss_rate > client.loss_rate + 0.001 {
                 client.max_send_burst = client.max_send_burst / 4 * 3;
                 // Minimun bound of 10xMSS.
-                client.max_send_burst =
-                    client.max_send_burst.max(client.max_datagram_size * 10);
+                client.max_send_burst = client.max_send_burst.max(client.max_datagram_size * 10);
                 client.loss_rate = loss_rate;
             }
 
-            let max_send_burst =
-                client.conn.send_quantum().min(client.max_send_burst) /
-                    client.max_datagram_size *
-                    client.max_datagram_size;
+            let max_send_burst = client.conn.send_quantum().min(client.max_send_burst)
+                / client.max_datagram_size
+                * client.max_datagram_size;
             let mut total_write = 0;
             let mut dst_info: Option<quiche::SendInfo> = None;
 
@@ -360,8 +335,7 @@ pub fn listen(
                         Some(info.from),
                         Some(info.to),
                     ),
-                    None =>
-                        client.conn.send(&mut out[total_write..max_send_burst]),
+                    None => client.conn.send(&mut out[total_write..max_send_burst]),
                 };
 
                 let (write, send_info) = match res {
@@ -369,23 +343,16 @@ pub fn listen(
 
                     Err(quiche::Error::Done) => {
                         continue_write = dst_info.is_some();
-                        trace!(
-                            "conn.send: {} done writing",
-                            client.conn.trace_id()
-                        );
+                        trace!("conn.send: {} done writing", client.conn.trace_id());
                         break;
-                    },
+                    }
 
                     Err(e) => {
-                        error!(
-                            "{} conn.send failed: {:?}",
-                            client.conn.trace_id(),
-                            e
-                        );
+                        error!("{} conn.send failed: {:?}", client.conn.trace_id(), e);
 
                         client.conn.close(false, 0x1, b"fail").ok();
                         break;
-                    },
+                    }
                 };
 
                 trace!(
@@ -486,7 +453,7 @@ fn handle_path_events(client: &mut Client) {
                     .probe_path(local_addr, peer_addr)
                     .map_err(|e| error!("cannot probe: {}", e))
                     .ok();
-            },
+            }
 
             quiche::PathEvent::Validated(local_addr, peer_addr) => {
                 info!(
@@ -502,7 +469,7 @@ fn handle_path_events(client: &mut Client) {
                         .map_err(|e| error!("cannot set path active: {}", e))
                         .ok();
                 }
-            },
+            }
 
             quiche::PathEvent::FailedValidation(local_addr, peer_addr) => {
                 info!(
@@ -511,7 +478,7 @@ fn handle_path_events(client: &mut Client) {
                     local_addr,
                     peer_addr
                 );
-            },
+            }
 
             quiche::PathEvent::Closed(local_addr, peer_addr, err, reason) => {
                 info!(
@@ -522,7 +489,7 @@ fn handle_path_events(client: &mut Client) {
                     err,
                     reason,
                 );
-            },
+            }
 
             quiche::PathEvent::ReusedSourceConnectionId(cid_seq, old, new) => {
                 info!(
@@ -532,7 +499,7 @@ fn handle_path_events(client: &mut Client) {
                     old,
                     new
                 );
-            },
+            }
 
             quiche::PathEvent::PeerMigrated(local_addr, peer_addr) => {
                 info!(
@@ -541,7 +508,7 @@ fn handle_path_events(client: &mut Client) {
                     local_addr,
                     peer_addr
                 );
-            },
+            }
 
             quiche::PathEvent::PeerPathStatus(addr, path_status) => {
                 info!("Peer asks status {:?} for {:?}", path_status, addr,);
@@ -550,7 +517,7 @@ fn handle_path_events(client: &mut Client) {
                     .set_path_status(addr.0, addr.1, path_status, false)
                     .map_err(|e| error!("cannot follow status request: {}", e))
                     .ok();
-            },
+            }
         }
     }
 }

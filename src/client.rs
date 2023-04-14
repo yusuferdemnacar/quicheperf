@@ -13,8 +13,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 pub fn connect(
-    local_addrs: Vec<SocketAddr>, peer_addrs: Vec<SocketAddr>, tc: TestConfig,
-    mut config: quiche::Config, mut scheduler: impl MultipathScheduler,
+    local_addrs: Vec<SocketAddr>,
+    peer_addrs: Vec<SocketAddr>,
+    tc: TestConfig,
+    mut config: quiche::Config,
+    mut scheduler: impl MultipathScheduler,
 ) -> Result<(), ClientError> {
     dbg!(&scheduler);
     let mut buf = [0; 65535];
@@ -65,9 +68,7 @@ pub fn connect(
     let scid = quiche::ConnectionId::from_ref(&scid);
 
     // Create a QUIC connection and initiate handshake.
-    let mut conn =
-        quiche::connect(None, &scid, local_addr, peer_addrs[0], &mut config)
-            .unwrap();
+    let mut conn = quiche::connect(None, &scid, local_addr, peer_addrs[0], &mut config).unwrap();
 
     if let Some(keylog) = &mut keylog {
         if let Ok(keylog) = keylog.try_clone() {
@@ -86,12 +87,7 @@ pub fn connect(
                 .intersperse(",".to_string())
                 .collect(),
         );
-        common::set_qlog(
-            &mut conn,
-            format!("{:?}", scid),
-            "client",
-            peer_addrs_str,
-        );
+        common::set_qlog(&mut conn, format!("{:?}", scid), "client", peer_addrs_str);
 
         common::qlog_metadata(&mut conn, &tc, &config);
     }
@@ -132,8 +128,7 @@ pub fn connect(
 
     'outer: loop {
         if !conn.is_in_early_data() || protocol.is_some() {
-            let timeout =
-                std::cmp::min(conn.timeout(), ui.timeout()).or(conn.timeout());
+            let timeout = std::cmp::min(conn.timeout(), ui.timeout()).or(conn.timeout());
             let poll_wait = Instant::now();
             log::trace!(
                 "poll_timeout= {}",
@@ -184,7 +179,7 @@ pub fn connect(
                             "{}: recv() failed: {:?}",
                             local_addr, e
                         )));
-                    },
+                    }
                 };
 
                 trace!("{}->{}: got {} bytes", from, local_addr, len);
@@ -201,7 +196,7 @@ pub fn connect(
                     Err(e) => {
                         error!("{}: recv failed: {:?}", local_addr, e);
                         continue 'read;
-                    },
+                    }
                 };
 
                 trace!("{}: processed {} bytes", local_addr, read);
@@ -216,9 +211,7 @@ pub fn connect(
 
         // Create a new application protocol session once the QUIC connection is
         // established.
-        if (conn.is_established() || conn.is_in_early_data())
-            && protocol.is_none()
-        {
+        if (conn.is_established() || conn.is_in_early_data()) && protocol.is_none() {
             let app_proto = conn.application_proto();
 
             if QUICHEPERF_ALPN.contains(&app_proto) {
@@ -230,9 +223,7 @@ pub fn connect(
         }
 
         if let Some(protocol) = protocol.as_mut() {
-            if !conn.is_closed()
-                && !conn.is_draining()
-                && !protocol.close_after_duration(&mut conn)
+            if !conn.is_closed() && !conn.is_draining() && !protocol.close_after_duration(&mut conn)
             {
                 if !protocol.config_sent {
                     protocol.send_config(&mut conn, &tc).ok();
@@ -268,10 +259,12 @@ pub fn connect(
             if conn.available_dcids() > 0 {
                 match conn.probe_path(local_probe_addr, peer_probe_addr) {
                     Ok(v) => {
-                        info!("{:}->{:} Successfully started probing for path with dcid {}",
-                        local_probe_addr, peer_probe_addr, v);
+                        info!(
+                            "{:}->{:} Successfully started probing for path with dcid {}",
+                            local_probe_addr, peer_probe_addr, v
+                        );
                         probed_paths += 1;
-                    },
+                    }
                     Err(e) => error!(
                         "{:}->{:} Failed probing path from: {}",
                         local_probe_addr, peer_probe_addr, e
@@ -291,31 +284,21 @@ pub fn connect(
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
         while let Some((local_addr, peer_addr)) = scheduler.get_best_path(&conn) {
-            let (write, send_info) = match conn.send_on_path(
-                &mut out,
-                Some(local_addr),
-                Some(peer_addr),
-            ) {
-                Ok(v) => v,
+            let (write, send_info) =
+                match conn.send_on_path(&mut out, Some(local_addr), Some(peer_addr)) {
+                    Ok(v) => v,
 
-                Err(quiche::Error::Done) => {
-                    trace!(
-                        "{} -> {}: done writing to conn",
-                        local_addr,
-                        peer_addr
-                    );
-                    break;
-                },
-                Err(e) => {
-                    error!(
-                        "{} -> {}: conn.send failed: {:?}",
-                        local_addr, peer_addr, e
-                    );
+                    Err(quiche::Error::Done) => {
+                        trace!("{} -> {}: done writing to conn", local_addr, peer_addr);
+                        break;
+                    }
+                    Err(e) => {
+                        error!("{} -> {}: conn.send failed: {:?}", local_addr, peer_addr, e);
 
-                    conn.close(false, 0x1, b"fail").ok();
-                    break;
-                },
-            };
+                        conn.close(false, 0x1, b"fail").ok();
+                        break;
+                    }
+                };
 
             let token = src_addrs[&send_info.from];
             let socket = &sockets[token];
@@ -348,15 +331,14 @@ pub fn connect(
             .map(|p| (p.local_addr, p.peer_addr))
             .collect();
         for (l, p) in path_stats {
-            let (write, send_info) =
-                match conn.send_on_path(&mut out, Some(l), Some(p)) {
-                    Ok(v) => v,
-                    Err(quiche::Error::Done) => break,
-                    Err(_) => {
-                        conn.close(false, 0x1, b"fail").ok();
-                        break;
-                    },
-                };
+            let (write, send_info) = match conn.send_on_path(&mut out, Some(l), Some(p)) {
+                Ok(v) => v,
+                Err(quiche::Error::Done) => break,
+                Err(_) => {
+                    conn.close(false, 0x1, b"fail").ok();
+                    break;
+                }
+            };
 
             let token = src_addrs[&send_info.from];
             let socket = &sockets[token];
@@ -423,29 +405,29 @@ fn client_handle_path_events(conn: &mut quiche::Connection) {
                 info!("Path ({}, {}) is now validated", local_addr, peer_addr);
                 // if conn_args.multipath {
                 conn.set_active(local_addr, peer_addr, true).ok();
-            },
+            }
 
             quiche::PathEvent::FailedValidation(local_addr, peer_addr) => {
                 info!("Path ({}, {}) failed validation", local_addr, peer_addr);
-            },
+            }
 
             quiche::PathEvent::Closed(local_addr, peer_addr, e, reason) => {
                 info!(
                     "Path ({}, {}) is now closed and unusable; err = {}, reason = {:?}",
                     local_addr, peer_addr, e, reason
                 );
-            },
+            }
 
             quiche::PathEvent::ReusedSourceConnectionId(cid_seq, old, new) => {
                 info!(
                     "Peer reused cid seq {} (initially {:?}) on {:?}",
                     cid_seq, old, new
                 );
-            },
+            }
 
             quiche::PathEvent::PeerMigrated(..) => unreachable!(),
 
-            quiche::PathEvent::PeerPathStatus(..) => {},
+            quiche::PathEvent::PeerPathStatus(..) => {}
         }
     }
 }

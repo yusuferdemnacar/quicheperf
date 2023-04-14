@@ -48,7 +48,9 @@ pub fn set_txtime_sockopt(sock: &mio::net::UdpSocket) -> io::Result<()> {
 
 #[cfg(feature = "qlog")]
 pub fn set_qlog(
-    conn: &mut quiche::Connection, scid: String, role: &str,
+    conn: &mut quiche::Connection,
+    scid: String,
+    role: &str,
     peer_addr: Option<String>,
 ) {
     if let Some(dir) = std::env::var_os("QLOGDIR") {
@@ -95,9 +97,7 @@ pub fn set_qlog(
     }
 }
 
-pub fn qlog_metadata(
-    conn: &mut quiche::Connection, tc: &TestConfig, config: &quiche::Config,
-) {
+pub fn qlog_metadata(conn: &mut quiche::Connection, tc: &TestConfig, config: &quiche::Config) {
     let metadata = TestMetadata {
         test_config: tc.clone(),
         cc_algorithm: config.get_cc_algorithm_name(),

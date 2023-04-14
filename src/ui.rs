@@ -69,7 +69,9 @@ impl UI {
     }
 
     pub fn new_test(
-        &self, local_addrs: &Vec<SocketAddr>, peer_addrs: &Vec<SocketAddr>,
+        &self,
+        local_addrs: &Vec<SocketAddr>,
+        peer_addrs: &Vec<SocketAddr>,
         tc: &TestConfig,
     ) {
         let test_type = if local_addrs.len() > 1 { "MP" } else { "SP" };
@@ -95,8 +97,8 @@ impl UI {
     }
 
     pub fn update(&mut self, conn: &quiche::Connection) {
-        if self.last_update.is_some() &&
-            self.last_update.unwrap().elapsed() <= Duration::from_secs(1)
+        if self.last_update.is_some()
+            && self.last_update.unwrap().elapsed() <= Duration::from_secs(1)
         {
             return;
         }
@@ -112,15 +114,10 @@ impl UI {
             } else {
                 let mut pstr = String::new();
                 for i in 0..npaths {
-                    pstr.push_str(&format!(
-                        "| P{}  Mbps   | P{} Lost/Total (sp) ",
-                        i, i));
+                    pstr.push_str(&format!("| P{}  Mbps   | P{} Lost/Total (sp) ", i, i));
                 }
 
-                println!(
-                    "| {:<3} | {:<10} {}|",
-                    "sec", "Total Mbps", pstr,
-                );
+                println!("| {:<3} | {:<10} {}|", "sec", "Total Mbps", pstr,);
             }
         }
 
@@ -154,7 +151,7 @@ impl UI {
                 None => {
                     self.paths.insert(key, PathStats::new());
                     self.paths.get_mut(&key).unwrap()
-                },
+                }
             };
 
             let ptput = if self.client_sending {
@@ -214,7 +211,6 @@ impl UI {
 
         let mut pstr = String::new();
         for (_i, pstats) in conn.path_stats().enumerate() {
-
             let ptput = if self.client_sending {
                 (pstats.sent_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6
             } else {
@@ -223,10 +219,7 @@ impl UI {
 
             let plost_perc = (pstats.lost as f32 / pstats.sent as f32) * 100.0;
 
-            pstr.push_str(&format!(
-                "| {:>10.2} | {:>17.4}% ",
-                ptput, plost_perc
-            ));
+            pstr.push_str(&format!("| {:>10.2} | {:>17.4}% ", ptput, plost_perc));
         }
 
         if conn.path_stats().count() < 2 {
@@ -235,11 +228,7 @@ impl UI {
                 "Avg", tput_total, stats.lost, lost_perc
             );
         } else {
-            println!(
-                "| {:>3} | {:>10.2} {}|",
-                "Avg", tput_total, pstr
-            );
-
+            println!("| {:>3} | {:>10.2} {}|", "Avg", tput_total, pstr);
         }
     }
 }
