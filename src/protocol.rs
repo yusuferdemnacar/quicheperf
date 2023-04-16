@@ -109,11 +109,9 @@ impl Protocol {
 
     // Called by client after sending TestConfig
     pub fn recv_config_ack(&mut self, conn: &mut Connection, buf: &mut [u8]) -> quiche::Result<()> {
-        info!("receiving test config ack");
-
         while let Ok((read, _fin)) = conn.stream_recv(0, buf) {
             trace!(
-                "{} received {} bytes from stream {}",
+                "recv_config_ack: {} received {} bytes from stream {}",
                 conn.trace_id(),
                 read,
                 0
@@ -122,20 +120,20 @@ impl Protocol {
             let tca: TestConfigAck = match serde_json::from_slice(&buf[..read]) {
                 Ok(tca) => tca,
                 Err(e) => {
-                    error!("Serde error: {}", e);
+                    error!("recv_config_ack: Serde error: {}", e);
                     return Err(quiche::Error::Done);
                 }
             };
 
             if let Some(e) = tca.error {
-                info!("Server returned TestConfig error: {}", e);
+                info!("recv_config_ack: Server returned TestConfig error: {}", e);
                 // TODO: close connection
                 return Err(quiche::Error::Done);
             }
 
             self.config_acked = true;
-            trace!("config_acked = truconfig_acked = truee")
         }
+        trace!("recv_config_ack: config_acked = {}", self.config_acked);
         Ok(())
     }
 
@@ -162,21 +160,14 @@ impl Protocol {
         trace!("receiving data");
         while let Ok((read, fin)) = conn.stream_recv(0, buf) {
             trace!(
-                "{} received {} bytes from stream {}",
+                "{} received {} bytes from stream {}, fin={}",
                 conn.trace_id(),
                 read,
-                0
-            );
-
-            let stream_buf = &buf[..read];
-
-            trace!(
-                "{} stream {} has {} bytes (fin? {})",
-                conn.trace_id(),
                 0,
-                stream_buf.len(),
                 fin
             );
+
+            let _stream_buf = &buf[..read];
 
             // Drop received data
         }

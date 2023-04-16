@@ -95,7 +95,13 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
             true => Some(std::time::Duration::from_secs(0)),
             false => clients.values().filter_map(|c| c.conn.timeout()).min(),
         };
+
+        let poll_wait = std::time::Instant::now();
         poll.poll(&mut events, timeout).unwrap();
+        trace!(
+            "poll_timeout was {:?} ms, slept for {:?} ms, events_empty={}",
+            timeout, poll_wait.elapsed(), events.is_empty()
+        );
 
         // If the event loop reported no events, it means that the timeout
         // has expired, so handle it without attempting to read packets. We
@@ -338,6 +344,7 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
                     None => client.conn.send(&mut out[total_write..max_send_burst]),
                 };
 
+                trace!("Try to send {}..{} to {:?}: {:?}", total_write, max_send_burst, dst_info, res);
                 let (write, send_info) = match res {
                     Ok(v) => v,
 

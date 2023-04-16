@@ -118,7 +118,6 @@ impl UI {
     fn print_per_second_update(&mut self, conn: &quiche::Connection) {
         let npaths = conn.path_stats().count();
         if self.last_update.is_none() || self.paths.len() < npaths {
-            info!("{}, {}", self.paths.len(), npaths);
             if npaths < 2 {
                 println!(
                     "| {:<3} | {:<10} | {:<18} |",
