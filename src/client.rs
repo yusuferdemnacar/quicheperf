@@ -131,11 +131,13 @@ pub fn connect(
             let timeout = std::cmp::min(conn.timeout(), ui.timeout()).or(conn.timeout());
             let poll_wait = Instant::now();
             log::trace!(
-                "poll_timeout= {}",
+                "poll_timeout= {}, conn= {:?},  ui= {:?}",
                 timeout
                     .as_ref()
                     .map(|x| Duration::as_millis(x))
-                    .unwrap_or(0)
+                    .unwrap_or(0),
+                conn.timeout(),
+                ui.timeout()
             );
             poll.poll(&mut events, timeout).unwrap();
             log::trace!(
@@ -145,7 +147,13 @@ pub fn connect(
             );
         }
 
-        if !conn.is_closed() && !conn.is_draining() && protocol.is_some() {
+        trace!(
+            "conn_closed={:?} (false?), draining={:?} (false?), protocol={:?} (true?)",
+            conn.is_closed(),
+            conn.is_draining(),
+            protocol.is_some()
+        );
+        if protocol.is_some() {
             ui.update(&conn);
         }
 

@@ -97,12 +97,25 @@ impl UI {
     }
 
     pub fn update(&mut self, conn: &quiche::Connection) {
-        if self.last_update.is_some()
-            && self.last_update.unwrap().elapsed() <= Duration::from_secs(1)
-        {
+        trace!(
+            "last_update={:?}, elapsed={:?}",
+            self.last_update,
+            self.last_update.map(|v| v.elapsed())
+        );
+        let update_due = self
+            .last_update
+            .map_or(true, |v| v.elapsed() > Duration::from_secs(1));
+        if !update_due || conn.is_closed() {
+            // || conn.is_draining()
             return;
         }
 
+        self.print_per_second_update(conn);
+
+        self.last_update = Some(Instant::now());
+    }
+
+    fn print_per_second_update(&mut self, conn: &quiche::Connection) {
         let npaths = conn.path_stats().count();
         if self.last_update.is_none() || self.paths.len() < npaths {
             info!("{}, {}", self.paths.len(), npaths);
@@ -195,7 +208,6 @@ impl UI {
             );
         }
 
-        self.last_update = Some(Instant::now());
         self.sent_bytes = stats.sent_bytes;
         self.recv_bytes = stats.recv_bytes;
         self.lost = stats.lost;

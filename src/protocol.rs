@@ -191,7 +191,6 @@ impl Protocol {
     ) -> quiche::Result<()> {
         debug!("receiving test config");
         let s = 0;
-        trace!("Reading from stream {}", s);
         match conn.stream_recv(s, buf) {
             Ok((read, _fin)) => {
                 let tc: TestConfig = match serde_json::from_slice(&buf[..read]) {
