@@ -85,6 +85,7 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
     let mut clients_ids = ClientIdMap::new();
     let mut clients = ClientMap::new();
 
+    // TODO: Why exactly is this needed?
     let mut continue_write = false;
 
     loop {
@@ -268,9 +269,10 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
 
                     if QUICHEPERF_ALPN.contains(&app_proto) {
                         info!("Connection established. Selecting QUICHEPERF protocol.");
-                        client.protocol = Some(Protocol::new())
+                        client.protocol = Some(Protocol::new());
                     } else {
-                        warn!("No ALPN matched")
+                        warn!("ALPN did not match {:?}: {:?}", QUICHEPERF_ALPN, app_proto);
+                        client.conn.close(false, 0x1, b"No ALPN match").ok();
                     }
                 }
 
@@ -375,12 +377,15 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
                 let _ = dst_info.get_or_insert(send_info);
 
                 if write < client.max_datagram_size {
+                    // https://github.com/cloudflare/quiche/commit/eac98fae15ce67ee774125c90db0d59c4deda5da
+                    continue_write = true;
                     break;
                 }
             }
 
             if total_write == 0 || dst_info.is_none() {
-                break;
+                // break;
+                continue;
             }
             let dst_info = dst_info.unwrap();
 
@@ -396,6 +401,7 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
                 enable_gso,
             ) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
+                    // TODO: The data of "out" is thrown away, right? Should I handle this?
                     trace!("send() would block");
                     break;
                 }
@@ -415,13 +421,15 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
                     "{} pause writing and consider another path",
                     client.conn.trace_id()
                 );
-                break;
+                // break;
+                continue;
             }
 
             if total_write >= max_send_burst {
                 trace!("{} pause writing", client.conn.trace_id(),);
                 continue_write = true;
-                break;
+                // break;
+                continue;
             }
         }
 
