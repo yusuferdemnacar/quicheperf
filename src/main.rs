@@ -216,5 +216,13 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
 
 git_testament_macros!(version);
 pub const fn version() -> &'static str {
-    concat!(env!("CARGO_PKG_VERSION"), " ", version_testament!(),)
+    if cfg!(debug_assertions) {
+        concat!(env!("CARGO_PKG_VERSION"), " (debug) ", version_testament!())
+    } else {
+        concat!(
+            env!("CARGO_PKG_VERSION"),
+            " (release) ",
+            version_testament!()
+        )
+    }
 }
