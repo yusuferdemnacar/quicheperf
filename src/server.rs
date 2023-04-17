@@ -101,7 +101,9 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
         poll.poll(&mut events, timeout).unwrap();
         trace!(
             "poll_timeout was {:?} ms, slept for {:?} ms, events_empty={}",
-            timeout, poll_wait.elapsed(), events.is_empty()
+            timeout,
+            poll_wait.elapsed(),
+            events.is_empty()
         );
 
         // If the event loop reported no events, it means that the timeout
@@ -284,6 +286,7 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
                         protocol
                             .recv_config(&mut client.conn, &mut buf, &password)
                             .ok();
+                        #[cfg(feature = "qlog")]
                         if let Some(tc) = &protocol.tc {
                             common::qlog_metadata(&mut client.conn, tc, &config);
                         }
@@ -346,7 +349,13 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
                     None => client.conn.send(&mut out[total_write..max_send_burst]),
                 };
 
-                trace!("Try to send {}..{} to {:?}: {:?}", total_write, max_send_burst, dst_info, res);
+                trace!(
+                    "Try to send {}..{} to {:?}: {:?}",
+                    total_write,
+                    max_send_burst,
+                    dst_info,
+                    res
+                );
                 let (write, send_info) = match res {
                     Ok(v) => v,
 
