@@ -445,12 +445,16 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
         // Garbage collect closed connections.
         clients.retain(|_, ref mut c| {
             if c.conn.is_closed() {
-                info!(
+                println!(
                     "{} connection collected {:?} {:?}",
                     c.conn.trace_id(),
                     c.conn.stats(),
                     c.conn.path_stats().collect::<Vec<quiche::PathStats>>()
                 );
+
+                if !c.conn.qlog_writer_drained() {
+                    println!("{} qlog event queue not yet drained", c.conn.trace_id());
+                }
             }
 
             !c.conn.is_closed()

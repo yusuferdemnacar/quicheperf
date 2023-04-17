@@ -395,10 +395,11 @@ pub fn connect(
         ui.print_summary(&conn);
     }
 
-    // TODO
-    // if let Some(si_conn) = siduck_conn {
-    //     si_conn.report_incomplete(&app_data_start);
-    // }
+    #[cfg(feature = "qlog")]
+    if !conn.qlog_writer_drained() {
+        println!("Waiting for the qlog event queue to be drained");
+    }
+    conn.await_qlog_writer_drained();
 
     Ok(())
 }
