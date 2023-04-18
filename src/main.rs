@@ -59,11 +59,6 @@ fn main() -> ExitCode {
         Err(exitcode) => return exitcode,
     };
 
-    if let Err(e) = config.set_cc_algorithm_name(args.congestion.to_lowercase().as_ref()) {
-        eprintln!("Could not set CCA {}: {}", args.congestion, e);
-        return ExitCode::FAILURE;
-    };
-
     match args.commands {
         cli::Subcommands::Client {
             peer_addrs,
