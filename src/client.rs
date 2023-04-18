@@ -12,6 +12,84 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use std::time::Instant;
 
+struct SocketState {
+    socket: mio::net::UdpSocket,
+    buf: [u8; MAX_DATAGRAM_SIZE],
+    until: usize,
+    to: Option<SocketAddr>,
+}
+
+impl SocketState {
+    fn new(socket: mio::net::UdpSocket) -> SocketState {
+        SocketState {
+            socket: socket,
+            buf: [0; MAX_DATAGRAM_SIZE],
+            until: 0,
+            to: None,
+        }
+    }
+
+    /// Returns whether a buffer is currently waiting to be written to the socket.
+    fn send_pending(&self) -> bool {
+        self.to.is_some()
+    }
+
+    /// Schedule a buffer for sending on the socket.
+    /// If `buf` is not None, its copied to the internal send buffer `buf`. If not, the internal
+    /// send buffer `buf` will be sent.
+    fn schedule_send(
+        &mut self,
+        buf: Option<&[u8; MAX_DATAGRAM_SIZE]>,
+        until: usize,
+        to: SocketAddr,
+    ) {
+        if self.to.is_some() {
+            panic!("Socket schedule_send: still had data to sent");
+        }
+        buf.map(|v| self.buf.clone_from_slice(v));
+        self.until = until;
+        self.to = Some(to);
+    }
+
+    /// Try to send the scheduled buffer, if it exists.
+    /// Returns Ok(0) if the socket returned WouldBlock.
+    fn try_send(&mut self) -> Result<usize, ClientError> {
+        if self.to.is_none() {
+            return Ok(0);
+        }
+        let write_buf = &self.buf[..self.until];
+        let local_addr = self.socket.local_addr().unwrap();
+        let peer_addr = self.to.unwrap();
+
+        match self.socket.send_to(write_buf, peer_addr) {
+            Ok(n) => {
+                self.to = None;
+                trace!(
+                    "try_send: {} -> {}: {} bytes written to socket",
+                    local_addr,
+                    peer_addr,
+                    self.until
+                );
+                Ok(n)
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    debug!(
+                        "try_send: {} -> {}: socket.send would block",
+                        local_addr, peer_addr
+                    );
+                    return Ok(0);
+                }
+
+                return Err(ClientError::Other(format!(
+                    "try_send: {} -> {}: send() failed: {:?}",
+                    local_addr, peer_addr, e
+                )));
+            }
+        }
+    }
+}
+
 pub fn connect(
     local_addrs: Vec<SocketAddr>,
     peer_addrs: Vec<SocketAddr>,
@@ -20,14 +98,13 @@ pub fn connect(
     mut scheduler: impl MultipathScheduler,
 ) -> Result<(), ClientError> {
     dbg!(&scheduler);
-    let mut buf = [0; 65535];
-    let mut out = [0; MAX_DATAGRAM_SIZE];
+    let mut recv_buf = [0; 65535];
 
     let mut ui = ui::UI::new(tc.client_sending);
     ui.new_test(&local_addrs, &peer_addrs, &tc);
 
-    let mut sockets = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
-    let mut src_addrs = HashMap::new();
+    let mut sockets: Slab<SocketState> = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
+    let mut src_addr_tokens = HashMap::new();
 
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -42,14 +119,15 @@ pub fn connect(
     for src_addr in local_addrs {
         let socket = mio::net::UdpSocket::bind(src_addr).unwrap();
         let local_addr = socket.local_addr().unwrap();
-        let token = sockets.insert(socket);
-        src_addrs.insert(local_addr, token);
+        let socket_data = SocketState::new(socket);
+        let token = sockets.insert(socket_data);
+        src_addr_tokens.insert(local_addr, token);
         addrs.push(local_addr);
         poll.registry()
             .register(
-                &mut sockets[token],
+                &mut sockets[token].socket,
                 mio::Token(token),
-                mio::Interest::READABLE,
+                mio::Interest::READABLE.add(mio::Interest::WRITABLE),
             )
             .unwrap();
     }
@@ -97,21 +175,13 @@ pub fn connect(
         peer_addrs[0], local_addr, scid
     );
 
-    let (write, send_info) = conn.send(&mut out).expect("initial send failed");
-    let token = src_addrs[&send_info.from];
-
-    while let Err(e) = sockets[token].send_to(&out[..write], send_info.to) {
-        if e.kind() == std::io::ErrorKind::WouldBlock {
-            trace!(
-                "{} -> {}: send() would block",
-                sockets[token].local_addr().unwrap(),
-                send_info.to
-            );
-            continue;
-        }
-
-        return Err(ClientError::Other(format!("send() failed: {:?}", e)));
-    }
+    // Send initial message to server
+    let mut write_buf = [0; MAX_DATAGRAM_SIZE];
+    let (write, send_info) = conn.send(&mut write_buf).expect("initial send failed");
+    let token = src_addr_tokens[&send_info.from];
+    let socket = &mut sockets[token];
+    socket.schedule_send(Some(&write_buf), write, send_info.to);
+    socket.try_send()?;
 
     trace!(
         "init write: written {} bytes from {:} to {:}",
@@ -147,12 +217,6 @@ pub fn connect(
             );
         }
 
-        trace!(
-            "conn_closed={:?} (false?), draining={:?} (false?), protocol={:?} (true?)",
-            conn.is_closed(),
-            conn.is_draining(),
-            protocol.is_some()
-        );
         if protocol.is_some() {
             ui.update(&conn);
         }
@@ -169,45 +233,52 @@ pub fn connect(
         // until there are no more packets to read.
         for event in &events {
             let token = event.token().into();
-            let socket = &sockets[token];
-            let local_addr = socket.local_addr().unwrap();
-            'read: loop {
-                let (len, from) = match socket.recv_from(&mut buf) {
-                    Ok(v) => v,
+            let socket = &mut sockets[token];
 
-                    Err(e) => {
-                        // There are no more UDP packets to read on this socket.
-                        // Process subsequent events.
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            trace!("{}: recv() would block", local_addr);
-                            break 'read;
+            if event.is_writable() && socket.send_pending() {
+                socket.try_send()?;
+            }
+
+            if event.is_readable() {
+                let local_addr = socket.socket.local_addr().unwrap();
+                'read: loop {
+                    let (len, from) = match socket.socket.recv_from(&mut recv_buf) {
+                        Ok(v) => v,
+
+                        Err(e) => {
+                            // There are no more UDP packets to read on this socket.
+                            // Process subsequent events.
+                            if e.kind() == std::io::ErrorKind::WouldBlock {
+                                trace!("{}: recv() would block", local_addr);
+                                break 'read;
+                            }
+
+                            return Err(ClientError::Other(format!(
+                                "{}: recv() failed: {:?}",
+                                local_addr, e
+                            )));
                         }
+                    };
 
-                        return Err(ClientError::Other(format!(
-                            "{}: recv() failed: {:?}",
-                            local_addr, e
-                        )));
-                    }
-                };
+                    trace!("{}->{}: got {} bytes", from, local_addr, len);
 
-                trace!("{}->{}: got {} bytes", from, local_addr, len);
+                    let recv_info = quiche::RecvInfo {
+                        to: local_addr,
+                        from,
+                    };
 
-                let recv_info = quiche::RecvInfo {
-                    to: local_addr,
-                    from,
-                };
+                    // Process potentially coalesced packets.
+                    let read = match conn.recv(&mut recv_buf[..len], recv_info) {
+                        Ok(v) => v,
 
-                // Process potentially coalesced packets.
-                let read = match conn.recv(&mut buf[..len], recv_info) {
-                    Ok(v) => v,
+                        Err(e) => {
+                            error!("{}: recv failed: {:?}", local_addr, e);
+                            continue 'read;
+                        }
+                    };
 
-                    Err(e) => {
-                        error!("{}: recv failed: {:?}", local_addr, e);
-                        continue 'read;
-                    }
-                };
-
-                trace!("{}: processed {} bytes", local_addr, read);
+                    trace!("{}: processed {} bytes", local_addr, read);
+                }
             }
         }
 
@@ -236,10 +307,10 @@ pub fn connect(
                 if !protocol.config_sent {
                     protocol.send_config(&mut conn, &tc).ok();
                 } else if !protocol.config_acked {
-                    protocol.recv_config_ack(&mut conn, &mut buf).ok();
+                    protocol.recv_config_ack(&mut conn, &mut recv_buf).ok();
                 }
                 if protocol.config_acked {
-                    protocol.work(&mut conn, &mut buf).ok();
+                    protocol.work(&mut conn, &mut recv_buf).ok();
                 }
             }
         }
@@ -292,8 +363,14 @@ pub fn connect(
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
         while let Some((local_addr, peer_addr)) = scheduler.get_best_path(&conn) {
+            let token = src_addr_tokens[&local_addr];
+            let socket = &mut sockets[token];
+            if socket.send_pending() {
+                continue;
+            }
+
             let (write, send_info) =
-                match conn.send_on_path(&mut out, Some(local_addr), Some(peer_addr)) {
+                match conn.send_on_path(&mut socket.buf, Some(local_addr), Some(peer_addr)) {
                     Ok(v) => v,
 
                     Err(quiche::Error::Done) => {
@@ -308,30 +385,8 @@ pub fn connect(
                     }
                 };
 
-            let token = src_addrs[&send_info.from];
-            let socket = &sockets[token];
-
-            if let Err(e) = socket.send_to(&out[..write], send_info.to) {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    debug!(
-                        "{} -> {}: socket.send() would block",
-                        local_addr, send_info.to
-                    );
-                    break;
-                }
-
-                return Err(ClientError::Other(format!(
-                    "{} -> {}: send() failed: {:?}",
-                    local_addr, send_info.to, e
-                )));
-            } else {
-                trace!(
-                    "{} -> {}: {} bytes written to socket",
-                    local_addr,
-                    send_info.to,
-                    write
-                );
-            }
+            socket.schedule_send(None, write, send_info.to);
+            socket.try_send()?;
         }
 
         let path_stats: Vec<_> = conn
@@ -339,7 +394,13 @@ pub fn connect(
             .map(|p| (p.local_addr, p.peer_addr))
             .collect();
         for (l, p) in path_stats {
-            let (write, send_info) = match conn.send_on_path(&mut out, Some(l), Some(p)) {
+            let token = src_addr_tokens[&local_addr];
+            let socket = &mut sockets[token];
+            if socket.send_pending() {
+                continue;
+            }
+
+            let (write, send_info) = match conn.send_on_path(&mut write_buf, Some(l), Some(p)) {
                 Ok(v) => v,
                 Err(quiche::Error::Done) => break,
                 Err(_) => {
@@ -348,30 +409,8 @@ pub fn connect(
                 }
             };
 
-            let token = src_addrs[&send_info.from];
-            let socket = &sockets[token];
-
-            if let Err(e) = socket.send_to(&out[..write], send_info.to) {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    debug!(
-                        "{} -> {}: socket.send() would block",
-                        local_addr, send_info.to
-                    );
-                    break;
-                }
-
-                return Err(ClientError::Other(format!(
-                    "{} -> {}: send() failed: {:?}",
-                    local_addr, send_info.to, e
-                )));
-            } else {
-                trace!(
-                    "{} -> {}: {} bytes written to socket",
-                    local_addr,
-                    send_info.to,
-                    write
-                );
-            }
+            socket.schedule_send(None, write, send_info.to);
+            socket.try_send()?;
         }
 
         if conn.is_closed() {
@@ -396,10 +435,12 @@ pub fn connect(
     }
 
     #[cfg(feature = "qlog")]
-    if !conn.qlog_writer_drained() {
-        println!("Waiting for the qlog event queue to be drained");
+    {
+        if !conn.qlog_writer_drained() {
+            println!("Waiting for the qlog event queue to be drained");
+        }
+        conn.await_qlog_writer_drained();
     }
-    conn.await_qlog_writer_drained();
 
     Ok(())
 }
