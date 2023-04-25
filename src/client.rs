@@ -391,36 +391,38 @@ pub fn connect(
             socket.try_send()?;
         }
 
-        let path_stats: Vec<_> = conn
-            .path_stats()
-            .map(|p| (p.local_addr, p.peer_addr))
-            .collect();
+        // let path_stats: Vec<_> = conn
+        //     .path_stats()
+        //     .map(|p| (p.local_addr, p.peer_addr))
+        //     .collect();
         // Only execute this for multipath
-        if path_stats.len() > 1 {
-            for (l, p) in path_stats {
-                let token = src_addr_tokens[&local_addr];
-                let socket = &mut sockets[token];
-                if socket.send_pending() {
-                    continue;
-                }
+        // Enabling this leads to error messages on the receiver, looking like:
+        // 74850c9a211749cc8b0a8933ead48b74043d1b1d dropped invalid packet: CryptoFail
+        // if path_stats.len() > 1 {
+        //     for (l, p) in path_stats {
+        //         let token = src_addr_tokens[&local_addr];
+        //         let socket = &mut sockets[token];
+        //         if socket.send_pending() {
+        //             continue;
+        //         }
 
-                let (write, send_info) = match conn.send_on_path(&mut write_buf, Some(l), Some(p)) {
-                    Ok(v) => v,
-                    Err(quiche::Error::Done) => break,
-                    Err(_) => {
-                        conn.close(false, 0x1, b"fail").ok();
-                        break;
-                    }
-                };
+        //         let (write, send_info) = match conn.send_on_path(&mut write_buf, Some(l), Some(p)) {
+        //             Ok(v) => v,
+        //             Err(quiche::Error::Done) => break,
+        //             Err(_) => {
+        //                 conn.close(false, 0x1, b"fail").ok();
+        //                 break;
+        //             }
+        //         };
 
-                socket.schedule_send(None, write, send_info.to);
-                socket.try_send()?;
-            }
+        //         socket.schedule_send(None, write, send_info.to);
+        //         socket.try_send()?;
+        //     }
 
-            if conn.is_closed() {
-                break 'outer;
-            }
-        }
+        //     if conn.is_closed() {
+        //         break 'outer;
+        //     }
+        // }
     }
 
     info!(
