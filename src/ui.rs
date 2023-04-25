@@ -76,13 +76,19 @@ impl UI {
     ) {
         let test_type = if local_addrs.len() > 1 { "MP" } else { "SP" };
 
+        let arrow = if tc.client_sending { "->" } else { "<-" };
         let addr_it = local_addrs.iter().zip(peer_addrs.iter());
         let addr_pairs = addr_it
-            .map(|(l, p)| l.to_string() + "->" + &p.to_string())
+            .map(|(l, p)| l.to_string() + arrow + &p.to_string())
             .join(", ");
 
         println!(
-            "{test_type} test for {duration:?} from {addr_pairs}",
+            "{direction} {test_type} test for {duration:?}: {addr_pairs}",
+            direction = if tc.client_sending {
+                "uplink"
+            } else {
+                "downlink"
+            },
             test_type = test_type,
             addr_pairs = addr_pairs,
             duration = tc.duration
