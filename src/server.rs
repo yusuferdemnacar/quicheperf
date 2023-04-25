@@ -5,6 +5,8 @@ use crate::protocol::Protocol;
 
 use super::common::*;
 use super::sendto;
+use quiche::scheduler::MultipathScheduler;
+use quiche::SendInfo;
 use ring::rand::*;
 use slab::Slab;
 use std::collections::HashMap;
@@ -12,6 +14,117 @@ use std::collections::HashMap;
 use quiche::ConnectionId;
 
 type ClientId = u64;
+
+#[derive(Debug)]
+pub enum ServerError {
+    SocketError(String),
+}
+
+struct SocketState {
+    // Constant, set with new()
+    socket: mio::net::UdpSocket,
+    pacing: bool,
+    enable_gso: bool,
+
+    // Changed for each send
+    buf: [u8; MAX_BUF_SIZE],
+    until: usize,
+    send_info: Option<SendInfo>,
+    max_datagram_size: usize,
+}
+
+impl SocketState {
+    fn new(socket: mio::net::UdpSocket, pacing: bool, enable_gso: bool) -> SocketState {
+        SocketState {
+            socket: socket,
+            pacing,
+            enable_gso,
+            buf: [0; MAX_BUF_SIZE],
+            until: 0,
+            send_info: None,
+            max_datagram_size: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.until = 0;
+        self.send_info = None;
+        self.max_datagram_size = 0;
+    }
+
+    /// Returns whether a buffer is currently waiting to be written to the socket.
+    // fn send_pending(&self) -> bool {
+    //     self.send_info.is_some()
+    // }
+
+    fn writable_for_dest(&self, peer_addr: &SocketAddr) -> bool {
+        match self.send_info {
+            Some(si) => si.to == *peer_addr,
+            None => true,
+        }
+    }
+
+    /// Schedule a buffer for sending on the socket.
+    /// If `buf` is not None, its copied to the internal send buffer `buf`. If not, the internal
+    /// send buffer `buf` will be sent.
+    // fn schedule_send(
+    //     &mut self,
+    //     buf: Option<&[u8; MAX_BUF_SIZE]>,
+    //     until: usize,
+    //     to: SendInfo,
+    //     max_datagram_size: usize,
+    // ) {
+    //     if self.send_info.is_some() {
+    //         panic!("Socket schedule_send: still had data to sent");
+    //     }
+    //     buf.map(|v| self.buf.clone_from_slice(v));
+    //     self.until = until;
+    //     self.send_info = Some(to);
+    //     self.max_datagram_size = max_datagram_size;
+    // }
+
+    /// Try to send the scheduled buffer, if it exists.
+    /// Returns Ok(0) if the socket returned WouldBlock.
+    fn try_send(&mut self) -> Result<usize, ServerError> {
+        let send_info = match self.send_info {
+            Some(v) => v,
+            None => return Ok(0),
+        };
+        trace!(
+            "{:}->{:} try sending scheduled {} bytes",
+            send_info.from,
+            send_info.to,
+            self.until
+        );
+        match sendto::send_to(
+            &self.socket,
+            &self.buf[..self.until],
+            &send_info,
+            self.max_datagram_size,
+            self.pacing,
+            self.enable_gso,
+        ) {
+            Ok(n) => {
+                let to = self.send_info.unwrap();
+                trace!("{:}->{:} written {} bytes", to.from, to.to, self.until,);
+                self.reset();
+                Ok(n)
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    // TODO: The data of "out" is thrown away, right? Should I handle this?
+                    trace!("send() would block");
+                    return Ok(0);
+                }
+
+                return Err(ServerError::SocketError(format!(
+                    "send_to() failed: {:?}",
+                    e
+                )));
+            }
+        }
+    }
+}
 
 struct Client {
     conn: quiche::Connection,
@@ -25,26 +138,33 @@ struct Client {
     // partial_responses: std::collections::HashMap<u64, PartialResponse>,
     max_datagram_size: usize,
 
-    loss_rate: f64,
-
+    // loss_rate: f64,
     max_send_burst: usize,
 }
 
 type ClientIdMap = HashMap<ConnectionId<'static>, ClientId>;
 type ClientMap = HashMap<ClientId, Client>;
 
-pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config: quiche::Config) {
+pub fn listen(
+    local_addrs: Vec<SocketAddr>,
+    password: Option<String>,
+    mut config: quiche::Config,
+    mut scheduler: impl MultipathScheduler,
+) -> ! {
     let mut buf = [0; MAX_BUF_SIZE];
     let mut out = [0; MAX_BUF_SIZE];
 
-    let mut sockets = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
-    let mut src_addrs = HashMap::new();
+    let mut sockets: Slab<SocketState> = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
+    let mut src_addr_tokens = HashMap::new();
 
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
 
     let mut enable_gso = true;
+    // Set SO_TXTIME socket option on the listening UDP socket for pacing
+    // outgoing packets.
+    let pacing = true;
 
     let mut addrs = Vec::new();
     for src_addr in local_addrs {
@@ -58,23 +178,20 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
         };
         enable_gso &= sendto::detect_gso(&socket, MAX_DATAGRAM_SIZE);
 
-        let token = sockets.insert(socket);
-        src_addrs.insert(local_addr, token);
+        let socket_state = SocketState::new(socket, pacing, enable_gso);
+        let token = sockets.insert(socket_state);
+        src_addr_tokens.insert(local_addr, token);
         addrs.push(local_addr);
         poll.registry()
             .register(
-                &mut sockets[token],
+                &mut sockets[token].socket,
                 mio::Token(token),
-                mio::Interest::READABLE,
+                mio::Interest::READABLE.add(mio::Interest::WRITABLE),
             )
             .unwrap();
 
         info!("listening on {:}", local_addr);
     }
-
-    // Set SO_TXTIME socket option on the listening UDP socket for pacing
-    // outgoing packets.
-    let pacing = true;
 
     let mut keylog = configure_keylog();
 
@@ -85,7 +202,8 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
     let mut clients_ids = ClientIdMap::new();
     let mut clients = ClientMap::new();
 
-    // TODO: Why exactly is this needed?
+    // Indicates if the poll sleep should return immediately so that the write part of
+    // the loop is ran again.
     let mut continue_write = false;
 
     loop {
@@ -100,10 +218,11 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
         let poll_wait = std::time::Instant::now();
         poll.poll(&mut events, timeout).unwrap();
         trace!(
-            "poll_timeout was {:?} ms, slept for {:?} ms, events_empty={}",
+            "poll_timeout was {:?} ms, slept for {:?} ms, events_empty={}, continue_write={}",
             timeout,
             poll_wait.elapsed(),
-            events.is_empty()
+            events.is_empty(),
+            continue_write,
         );
 
         // If the event loop reported no events, it means that the timeout
@@ -118,10 +237,21 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
             // Read incoming UDP packets from the socket and feed them to quiche,
             // until there are no more packets to read.
             let token = event.token().into();
-            let socket = &sockets[token];
-            let local_addr = socket.local_addr().unwrap();
+            let socket = &mut sockets[token];
+            let local_addr = socket.socket.local_addr().unwrap();
+
+            if event.is_writable() {
+                // If a send is pending, this will try sending. If not, nothing is done.
+                if let Err(e) = socket.try_send() {
+                    panic!("socket.try_send failed: {:?}", e);
+                };
+            }
+
+            if !event.is_readable() {
+                continue;
+            }
             'read: loop {
-                let (len, from) = match socket.recv_from(&mut buf) {
+                let (len, from) = match socket.socket.recv_from(&mut buf) {
                     Ok(v) => v,
 
                     Err(e) => {
@@ -174,9 +304,10 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
 
                         let out = &out[..len];
 
-                        if let Err(e) = socket.send_to(out, from) {
+                        // TODO: refactor
+                        if let Err(e) = socket.socket.send_to(out, from) {
                             if e.kind() == std::io::ErrorKind::WouldBlock {
-                                trace!("send() would block");
+                                trace!("send() would block in connection establishment");
                                 break;
                             }
 
@@ -216,7 +347,7 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
                         // partial_responses: HashMap::new(),
                         // siduck_conn: None,
                         max_datagram_size: MAX_DATAGRAM_SIZE,
-                        loss_rate: 0.0,
+                        // loss_rate: 0.0,
                         max_send_burst: MAX_BUF_SIZE,
                     };
 
@@ -325,53 +456,61 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
         continue_write = false;
         for client in clients.values_mut() {
             // Reduce max_send_burst by 25% if loss is increasing more than 0.1%.
-            let loss_rate = client.conn.stats().lost as f64 / client.conn.stats().sent as f64;
-            if loss_rate > client.loss_rate + 0.001 {
-                client.max_send_burst = client.max_send_burst / 4 * 3;
-                // Minimun bound of 10xMSS.
-                client.max_send_burst = client.max_send_burst.max(client.max_datagram_size * 10);
-                client.loss_rate = loss_rate;
-            }
+            // let loss_rate = client.conn.stats().lost as f64 / client.conn.stats().sent as f64;
+            // if loss_rate > client.loss_rate + 0.001 {
+            //     let prev_max_send_burst = client.max_send_burst;
+            //     let prev_loss_rate = client.loss_rate;
+            //     client.max_send_burst = client.max_send_burst / 4 * 3;
+            //     // Minimun bound of 10xMSS.
+            //     client.max_send_burst = client.max_send_burst.max(client.max_datagram_size * 10);
+            //     client.loss_rate = loss_rate;
+            //     debug!("Decreased max_send_burst of {} from {} to {} since loss increased from {} to {}",
+            //             client.conn.trace_id(),
+            //             prev_max_send_burst, client.max_send_burst, prev_loss_rate, loss_rate);
+            // }
 
             let max_send_burst = client.conn.send_quantum().min(client.max_send_burst)
                 / client.max_datagram_size
                 * client.max_datagram_size;
-            let mut total_write = 0;
-            let mut dst_info: Option<quiche::SendInfo> = None;
 
-            while total_write < max_send_burst {
-                let res = match dst_info {
-                    Some(info) => client.conn.send_on_path(
-                        &mut out[total_write..max_send_burst],
-                        Some(info.from),
-                        Some(info.to),
-                    ),
-                    None => client.conn.send(&mut out[total_write..max_send_burst]),
-                };
+            while let Some((local_addr, peer_addr)) = scheduler.get_best_path(&client.conn) {
+                let token = src_addr_tokens[&local_addr];
+                let socket = &mut sockets[token];
+                if !socket.writable_for_dest(&peer_addr) {
+                    // Ideally we would check the second-best path but this is not currently possible
+                    continue;
+                }
 
-                trace!(
-                    "Try to send {}..{} to {:?}: {:?}",
-                    total_write,
-                    max_send_burst,
-                    dst_info,
-                    res
-                );
-                let (write, send_info) = match res {
+                if socket.until >= max_send_burst {
+                    // The QUIC connection might have more data to write than max_send_burst.
+                    // Set continue_write to immediately exit the event poll.
+                    continue_write = true;
+                    break;
+                }
+
+                let (write, send_info) = match client.conn.send_on_path(
+                    &mut socket.buf[socket.until..max_send_burst],
+                    Some(local_addr),
+                    Some(peer_addr),
+                ) {
                     Ok(v) => v,
 
                     Err(quiche::Error::Done) => {
-                        continue_write = dst_info.is_some();
                         trace!("conn.send: {} done writing", client.conn.trace_id());
                         break;
                     }
 
                     Err(e) => {
                         error!("{} conn.send failed: {:?}", client.conn.trace_id(), e);
-
                         client.conn.close(false, 0x1, b"fail").ok();
+                        // Not sure what's correct in this situation.
                         break;
                     }
                 };
+
+                socket.until += write;
+                let _ = socket.send_info.get_or_insert(send_info);
+                socket.max_datagram_size = client.max_datagram_size;
 
                 trace!(
                     "{:}->{:} conn.send: wrote {} bytes",
@@ -380,65 +519,24 @@ pub fn listen(local_addrs: Vec<SocketAddr>, password: Option<String>, mut config
                     write
                 );
 
-                total_write += write;
-
-                // Use the first packet time to send, not the last.
-                let _ = dst_info.get_or_insert(send_info);
-
                 if write < client.max_datagram_size {
                     // https://github.com/cloudflare/quiche/commit/eac98fae15ce67ee774125c90db0d59c4deda5da
+                    // The QUIC connection might has more data to write than this it did not fill.
+                    // Set continue_write to immediately exit the event poll.
                     continue_write = true;
+
+                    // We can not continue appending packets to this send buffer. Immediately break to
+                    // sending the buffer.
                     break;
                 }
             }
 
-            if total_write == 0 || dst_info.is_none() {
-                // break;
-                continue;
-            }
-            let dst_info = dst_info.unwrap();
-
-            let token = src_addrs[&dst_info.from];
-            let socket = &sockets[token];
-
-            if let Err(e) = sendto::send_to(
-                &socket,
-                &out[..total_write],
-                &dst_info,
-                client.max_datagram_size,
-                pacing,
-                enable_gso,
-            ) {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    // TODO: The data of "out" is thrown away, right? Should I handle this?
-                    trace!("send() would block");
-                    break;
+            // Pass the buffer packet data to the UDP socket.
+            for (_local_addr, token) in src_addr_tokens.iter() {
+                let socket = &mut sockets[*token];
+                if let Err(e) = socket.try_send() {
+                    panic!("socket.try_send failed: {:?}", e);
                 }
-
-                panic!("send_to() failed: {:?}", e);
-            }
-
-            trace!(
-                "{:}->{:} written {} bytes",
-                dst_info.from,
-                dst_info.to,
-                total_write
-            );
-
-            if continue_write {
-                trace!(
-                    "{} pause writing and consider another path",
-                    client.conn.trace_id()
-                );
-                // break;
-                continue;
-            }
-
-            if total_write >= max_send_burst {
-                trace!("{} pause writing", client.conn.trace_id(),);
-                continue_write = true;
-                // break;
-                continue;
             }
         }
 

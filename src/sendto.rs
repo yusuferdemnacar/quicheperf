@@ -121,14 +121,7 @@ pub fn send_to(
     enable_gso: bool,
 ) -> io::Result<usize> {
     if pacing && enable_gso {
-        match send_to_gso_pacing(socket, buf, send_info, segment_size) {
-            Ok(v) => {
-                return Ok(v);
-            }
-            Err(e) => {
-                return Err(e);
-            }
-        }
+        return send_to_gso_pacing(socket, buf, send_info, segment_size);
     }
 
     let mut off = 0;

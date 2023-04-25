@@ -49,6 +49,7 @@ impl SocketState {
         buf.map(|v| self.buf.clone_from_slice(v));
         self.until = until;
         self.to = Some(to);
+        trace!("try_send: schedule {} bytes to {}", self.until, to);
     }
 
     /// Try to send the scheduled buffer, if it exists.
@@ -119,8 +120,8 @@ pub fn connect(
     for src_addr in local_addrs {
         let socket = mio::net::UdpSocket::bind(src_addr).unwrap();
         let local_addr = socket.local_addr().unwrap();
-        let socket_data = SocketState::new(socket);
-        let token = sockets.insert(socket_data);
+        let socket_state = SocketState::new(socket);
+        let token = sockets.insert(socket_state);
         src_addr_tokens.insert(local_addr, token);
         addrs.push(local_addr);
         poll.registry()
@@ -366,6 +367,7 @@ pub fn connect(
             let token = src_addr_tokens[&local_addr];
             let socket = &mut sockets[token];
             if socket.send_pending() {
+                trace!("Packet send on socket {} pending, continue", local_addr);
                 continue;
             }
 
@@ -393,28 +395,31 @@ pub fn connect(
             .path_stats()
             .map(|p| (p.local_addr, p.peer_addr))
             .collect();
-        for (l, p) in path_stats {
-            let token = src_addr_tokens[&local_addr];
-            let socket = &mut sockets[token];
-            if socket.send_pending() {
-                continue;
+        // Only execute this for multipath
+        if path_stats.len() > 1 {
+            for (l, p) in path_stats {
+                let token = src_addr_tokens[&local_addr];
+                let socket = &mut sockets[token];
+                if socket.send_pending() {
+                    continue;
+                }
+
+                let (write, send_info) = match conn.send_on_path(&mut write_buf, Some(l), Some(p)) {
+                    Ok(v) => v,
+                    Err(quiche::Error::Done) => break,
+                    Err(_) => {
+                        conn.close(false, 0x1, b"fail").ok();
+                        break;
+                    }
+                };
+
+                socket.schedule_send(None, write, send_info.to);
+                socket.try_send()?;
             }
 
-            let (write, send_info) = match conn.send_on_path(&mut write_buf, Some(l), Some(p)) {
-                Ok(v) => v,
-                Err(quiche::Error::Done) => break,
-                Err(_) => {
-                    conn.close(false, 0x1, b"fail").ok();
-                    break;
-                }
-            };
-
-            socket.schedule_send(None, write, send_info.to);
-            socket.try_send()?;
-        }
-
-        if conn.is_closed() {
-            break 'outer;
+            if conn.is_closed() {
+                break 'outer;
+            }
         }
     }
 

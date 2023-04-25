@@ -223,6 +223,7 @@ impl UI {
     pub fn print_summary(&mut self, conn: &quiche::Connection) {
         let stats = conn.stats();
 
+        // TODO: Average not correct in high throughput scenarios
         let tput_total = (stats.sent_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6;
         let lost_perc = (stats.lost as f32 / stats.sent as f32) * 100.0;
 

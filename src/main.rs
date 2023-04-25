@@ -102,7 +102,6 @@ fn main() -> ExitCode {
             return match res {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
-                // Err(client::ClientError::HttpFail) => std::process::exit(-2),
                 Err(client::ClientError::Other(e)) => {
                     eprintln!("{}", e);
                     ExitCode::FAILURE
@@ -126,11 +125,22 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
 
-            server::listen(args.local_addrs, args.password, config);
+            match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
+                cli::SchedulerOpts::Blest => server::listen(
+                    args.local_addrs,
+                    args.password,
+                    config,
+                    scheduler::Blest::new(),
+                ),
+                cli::SchedulerOpts::MinRTT => server::listen(
+                    args.local_addrs,
+                    args.password,
+                    config,
+                    scheduler::MinRTT::new(),
+                ),
+            };
         }
     }
-
-    ExitCode::FAILURE
 }
 
 pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
