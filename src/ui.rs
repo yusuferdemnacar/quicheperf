@@ -137,12 +137,10 @@ impl UI {
         let mut pstr = String::new();
 
         let stats = conn.stats();
-        let tput_sent = (stats.sent_bytes - self.sent_bytes) as f32 * 8.0 / 1e6;
-        let tput_recv = (stats.recv_bytes - self.recv_bytes) as f32 * 8.0 / 1e6;
         let tput = if self.client_sending {
-            tput_sent
+            (stats.sent_bytes - self.sent_bytes) as f32 * 8.0 / 1e6
         } else {
-            tput_recv
+            (stats.recv_bytes - self.recv_bytes) as f32 * 8.0 / 1e6
         };
         // let lost_total = stats.lost - self.lost;
 
@@ -218,8 +216,11 @@ impl UI {
     pub fn print_summary(&mut self, conn: &quiche::Connection) {
         let stats = conn.stats();
 
-        // TODO: Average not correct in high throughput scenarios
-        let tput_total = (stats.sent_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6;
+        let tput_total = if self.client_sending {
+            (stats.sent_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6
+        } else {
+            (stats.recv_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6
+        };
         let lost_perc = (stats.lost as f32 / stats.sent as f32) * 100.0;
 
         let mut pstr = String::new();
@@ -235,13 +236,14 @@ impl UI {
             pstr.push_str(&format!("| {:>10.2} | {:>17.4}% ", ptput, plost_perc));
         }
 
+        let first_col = if self.client_sending { "Snt" } else { "Rcv" };
         if conn.path_stats().count() < 2 {
             println!(
                 "| {:>3} | {:>10.2} | {:>5} {:>11.4}% |",
-                "Avg", tput_total, stats.lost, lost_perc
+                first_col, tput_total, stats.lost, lost_perc
             );
         } else {
-            println!("| {:>3} | {:>10.2} {}|", "Avg", tput_total, pstr);
+            println!("| {:>3} | {:>10.2} {}|", first_col, tput_total, pstr);
         }
     }
 }
