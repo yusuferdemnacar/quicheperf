@@ -178,6 +178,18 @@ pub fn listen(
         };
         enable_gso &= sendto::detect_gso(&socket, MAX_DATAGRAM_SIZE);
 
+        #[cfg(target_os = "linux")]
+        {
+            match common::set_socket_buf_size(&socket, common::UDPBufType::Rcv) {
+                Ok(v) => info!("Set the UDP rcv buf size to {}", v),
+                Err(e) => warn!("{}", e),
+            };
+            match common::set_socket_buf_size(&socket, common::UDPBufType::Snd) {
+                Ok(v) => info!("Set the UDP snd buf size to {}", v),
+                Err(e) => warn!("{}", e),
+            };
+        }
+
         let socket_state = SocketState::new(socket, pacing, enable_gso);
         let token = sockets.insert(socket_state);
         src_addr_tokens.insert(local_addr, token);

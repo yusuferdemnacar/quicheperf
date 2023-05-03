@@ -46,6 +46,75 @@ pub fn set_txtime_sockopt(sock: &mio::net::UdpSocket) -> io::Result<()> {
     Ok(())
 }
 
+const DESIRED_RCV_BUF_SIZE: usize = 10_000_000;
+const DESIRED_SND_BUF_SIZE: usize = 10_000_000;
+
+#[derive(Debug, Clone, Copy)]
+pub enum UDPBufType {
+    Rcv,
+    Snd,
+}
+
+#[cfg(target_os = "linux")]
+fn get_buffer_size(
+    sock: &mio::net::UdpSocket,
+    buf_type: UDPBufType,
+) -> Result<usize, nix::errno::Errno> {
+    use nix::sys::socket::sockopt;
+    use std::os::unix::io::AsRawFd;
+
+    let fd = sock.as_raw_fd();
+    let doubled_size = match buf_type {
+        UDPBufType::Rcv => nix::sys::socket::getsockopt(fd, sockopt::RcvBuf),
+        UDPBufType::Snd => nix::sys::socket::getsockopt(fd, sockopt::SndBuf),
+    };
+
+    // https://stackoverflow.com/questions/21146955/getsockopt-so-recvbuf-after-doing-a-set-shows-double-the-value-in-linux
+    doubled_size.map(|v| v / 2)
+}
+
+#[cfg(target_os = "linux")]
+fn set_buffer_size(
+    sock: &mio::net::UdpSocket,
+    buf_type: UDPBufType,
+    size: usize,
+) -> Result<(), nix::errno::Errno> {
+    use nix::sys::socket::setsockopt;
+    use nix::sys::socket::sockopt;
+    use std::os::unix::io::AsRawFd;
+
+    let fd = sock.as_raw_fd();
+    match buf_type {
+        UDPBufType::Rcv => setsockopt(fd, sockopt::RcvBuf, &size),
+        UDPBufType::Snd => setsockopt(fd, sockopt::SndBuf, &size),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn set_socket_buf_size(
+    sock: &mio::net::UdpSocket,
+    buf_type: UDPBufType,
+) -> Result<usize, String> {
+    let prev = get_buffer_size(sock, buf_type)
+        .map_err(|e| format!("Could not read {:?} buffer size: {}", buf_type, e).to_owned())?;
+    let desired_size = match buf_type {
+        UDPBufType::Rcv => DESIRED_RCV_BUF_SIZE,
+        UDPBufType::Snd => DESIRED_SND_BUF_SIZE,
+    };
+    set_buffer_size(sock, buf_type, desired_size).ok();
+    let now = get_buffer_size(sock, buf_type)
+        .map_err(|e| format!("Could not read {:?} buffer size: {}", buf_type, e).to_owned())?;
+
+    if now != desired_size {
+        Err(format!(
+            "Could not set the {:?} buf size to {}. It changed from {} to {}",
+            buf_type, desired_size, prev, now
+        ))
+    } else {
+        Ok(now)
+    }
+}
+
 #[cfg(feature = "qlog")]
 pub fn set_qlog(
     conn: &mut quiche::Connection,

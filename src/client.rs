@@ -17,6 +17,7 @@ struct SocketState {
     buf: [u8; MAX_DATAGRAM_SIZE],
     until: usize,
     to: Option<SocketAddr>,
+    would_block_cntr: u64,
 }
 
 impl SocketState {
@@ -26,6 +27,7 @@ impl SocketState {
             buf: [0; MAX_DATAGRAM_SIZE],
             until: 0,
             to: None,
+            would_block_cntr: 0,
         }
     }
 
@@ -79,6 +81,7 @@ impl SocketState {
                         "try_send: {} -> {}: socket.send would block",
                         local_addr, peer_addr
                     );
+                    self.would_block_cntr += 1;
                     return Ok(0);
                 }
 
@@ -120,6 +123,19 @@ pub fn connect(
     for src_addr in local_addrs {
         let socket = mio::net::UdpSocket::bind(src_addr).unwrap();
         let local_addr = socket.local_addr().unwrap();
+
+        #[cfg(target_os = "linux")]
+        {
+            match common::set_socket_buf_size(&socket, common::UDPBufType::Rcv) {
+                Ok(v) => info!("Set the UDP rcv buf size to {}", v),
+                Err(e) => warn!("{}", e),
+            };
+            match common::set_socket_buf_size(&socket, common::UDPBufType::Snd) {
+                Ok(v) => info!("Set the UDP snd buf size to {}", v),
+                Err(e) => warn!("{}", e),
+            };
+        }
+
         let socket_state = SocketState::new(socket);
         let token = sockets.insert(socket_state);
         src_addr_tokens.insert(local_addr, token);
@@ -433,6 +449,18 @@ pub fn connect(
         error!("connection timed out after {:?}", app_data_start.elapsed(),);
 
         return Err(ClientError::HandshakeFail);
+    }
+
+    for (local_addr, token) in src_addr_tokens.iter() {
+        let socket = &mut sockets[*token];
+        if socket.would_block_cntr > 0 {
+            let msg = format!(
+                "{}: socket snd buf was full {} times. Consider increasing the send buffer size.",
+                local_addr, socket.would_block_cntr
+            );
+            warn!("{}", msg);
+            println!("{}", msg);
+        }
     }
 
     if protocol.is_some() {

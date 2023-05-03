@@ -103,11 +103,6 @@ impl UI {
     }
 
     pub fn update(&mut self, conn: &quiche::Connection) {
-        trace!(
-            "last_update={:?}, elapsed={:?}",
-            self.last_update,
-            self.last_update.map(|v| v.elapsed())
-        );
         let update_due = self
             .last_update
             .map_or(true, |v| v.elapsed() > Duration::from_secs(1));
