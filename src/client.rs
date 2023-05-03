@@ -358,17 +358,15 @@ pub fn connect(
             }
         }
 
-        // Determine in which order we are going to iterate over paths.
-        // let scheduled_tuples = lowest_latency_scheduler(&conn);
-
-        // Generate outgoing QUIC packets and send them on the UDP socket, until
-        // quiche reports that there are no more packets to be sent.
+        // Generate outgoing QUIC packets and send them on the UDP socket.
         while let Some((local_addr, peer_addr)) = scheduler.get_best_path(&conn) {
             let token = src_addr_tokens[&local_addr];
             let socket = &mut sockets[token];
             if socket.send_pending() {
-                trace!("Packet send on socket {} pending, continue", local_addr);
-                continue;
+                // The scheduler will probably return this same path over and over again. Break to exit (potential) infinite loop.
+                // In most cases, socket.try_send() would block now. We wait for a writable event.
+                trace!("outgoing packet on socket {} pending", local_addr);
+                break;
             }
 
             let (write, send_info) =
