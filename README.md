@@ -6,10 +6,10 @@ QUIC performance testing tool based on [our fork of quiche](https://gitlab.lrz.d
 # Setup
 Both quiche and quicheperf need to be cloned
 ```
-git clone git@gitlab.lrz.de:cm/quiche.git
-git clone git@gitlab.lrz.de:ge36xuy/quicheperf.git
+git clone --recurse-submodules git@gitlab.lrz.de:cm/quiche.git
+git clone git@gitlab.lrz.de:cm/quicheperf.git
 cd quicheperf
-cargo build --release --bin quicheperf
+cargo build --release quicheperf
 ```
 
 
