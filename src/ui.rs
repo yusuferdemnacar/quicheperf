@@ -36,6 +36,8 @@ impl PathStats {
     }
 }
 
+const UPDATE_FREQ: Duration = Duration::from_secs(1);
+
 #[derive(Debug)]
 pub struct UI {
     client_sending: bool,
@@ -95,17 +97,17 @@ impl UI {
         );
     }
 
-    pub fn timeout(&self) -> Option<Duration> {
-        let last_update = self.last_update?;
-        Duration::from_secs(1)
-            .checked_sub(last_update.elapsed())
-            .or_else(|| Some(std::time::Duration::ZERO))
+    pub fn timeout(&self) -> Duration {
+        match self.last_update {
+            Some(last_update) => UPDATE_FREQ
+                .checked_sub(last_update.elapsed())
+                .unwrap_or(Duration::ZERO),
+            None => Duration::ZERO,
+        }
     }
 
     pub fn update(&mut self, conn: &quiche::Connection) {
-        let update_due = self
-            .last_update
-            .map_or(true, |v| v.elapsed() > Duration::from_secs(1));
+        let update_due = self.last_update.map_or(true, |v| v.elapsed() > UPDATE_FREQ);
         if !update_due || conn.is_closed() {
             // || conn.is_draining()
             return;

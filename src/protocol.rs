@@ -1,3 +1,4 @@
+use std::time;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -7,6 +8,8 @@ use serde::Serialize;
 
 pub const SEND_DATA: [u8; 65507] = [0; 65507];
 
+const BITRATE_TIMER: Duration = Duration::from_millis(10);
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TestConfig {
     pub local_addrs: Vec<String>,
@@ -15,6 +18,9 @@ pub struct TestConfig {
     pub password: Option<String>,
     pub client_sending: bool,
     pub duration: Duration,
+
+    // If None, send as much data as possible. If Some(v), try to send v bits per second.
+    pub bitrate_target: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -28,6 +34,12 @@ pub struct Protocol {
     pub config_acked: bool,
     pub tc: Option<TestConfig>,
     start: Option<Instant>,
+
+    // Set after test duration expired
+    finished: bool,
+
+    // Point in time when data was last sent
+    last_send: Option<Instant>,
 }
 
 impl Protocol {
@@ -37,9 +49,29 @@ impl Protocol {
             config_acked: false,
             tc: None,
             start: None,
+            finished: false,
+            last_send: None,
         }
     }
 
+    pub fn timeout(&self) -> time::Duration {
+        if self.finished
+            || self.tc.is_none()
+            || self.tc.as_ref().unwrap().bitrate_target.is_none()
+            || !self.config_sent
+            || !self.config_acked
+        {
+            time::Duration::MAX
+        } else if let Some(last_send) = self.last_send {
+            BITRATE_TIMER
+                .checked_sub(last_send.elapsed())
+                .unwrap_or(time::Duration::ZERO)
+        } else {
+            time::Duration::ZERO
+        }
+    }
+
+    /// Dispatch to send or receive data based on test direction
     pub fn work(&mut self, conn: &mut Connection, buf: &mut [u8]) -> quiche::Result<()> {
         if !self.config_acked {
             return Err(quiche::Error::Done);
@@ -54,7 +86,8 @@ impl Protocol {
         }
     }
 
-    pub fn close_after_duration(&self, conn: &mut Connection) -> bool {
+    /// Check if the test duration expired and close connection if applicable
+    pub fn close_after_duration(&mut self, conn: &mut Connection) -> bool {
         let duration = match (&self.tc, self.start) {
             (Some(tc), Some(start)) => tc
                 .duration
@@ -70,6 +103,7 @@ impl Protocol {
             self.start.unwrap().elapsed(),
             self.tc.as_ref().unwrap().duration
         );
+        self.finished = true;
         match conn.close(true, 0x00, b"kthxbye") {
             // Already closed.
             Ok(_) | Err(quiche::Error::Done) => true,
@@ -77,7 +111,7 @@ impl Protocol {
         }
     }
 
-    // Called by client to kick off test
+    /// Called by client to kick off test
     pub fn send_config(&mut self, conn: &mut Connection, tc: &TestConfig) -> quiche::Result<()> {
         trace!("Trying to send test configuration request");
 
@@ -137,10 +171,37 @@ impl Protocol {
         Ok(())
     }
 
+    /// Returns how many bytes to send right now if a target bitrate was configured. If not, None is returned.
+    fn bitrate_target_quantum(&self) -> Option<u64> {
+        let bitrate_target = self.tc.as_ref()?.bitrate_target?;
+        let bytes_per_round = bitrate_target
+            / (Duration::from_secs(1).as_millis() / BITRATE_TIMER.as_millis()) as u64;
+        match self.last_send {
+            Some(last_send) => {
+                // Clamp value to prevent excessive bursts
+                let rounds_elapsed = (last_send.elapsed().as_micros() as f64
+                    / BITRATE_TIMER.as_micros() as f64)
+                    .clamp(0.0, 3.0);
+                if rounds_elapsed < 1.0 {
+                    Some(0)
+                } else {
+                    let send_bytes = (bytes_per_round as f64 * rounds_elapsed) as u64;
+                    Some(send_bytes)
+                }
+            }
+            None => Some(bytes_per_round),
+        }
+    }
+
     pub fn send_data(&mut self, conn: &mut Connection) -> quiche::Result<()> {
-        trace!("sending data");
-        loop {
-            let written = match conn.stream_send(0, &SEND_DATA, false) {
+        let send_quantum = self.bitrate_target_quantum();
+        let mut bytes_to_send = send_quantum.unwrap_or(SEND_DATA.len() as u64 * 1000);
+
+        while bytes_to_send > 0 {
+            let offset = std::cmp::min(bytes_to_send, SEND_DATA.len() as u64);
+            let send_buf = &SEND_DATA[..offset as usize];
+            bytes_to_send -= offset;
+            let written = match conn.stream_send(0, send_buf, false) {
                 Ok(v) => v,
 
                 Err(quiche::Error::Done) => break,
@@ -151,8 +212,10 @@ impl Protocol {
                 }
             };
 
+            self.last_send = Some(Instant::now());
             trace!("Wrote {} bytes", written);
         }
+
         Ok(())
     }
 

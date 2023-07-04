@@ -1,3 +1,4 @@
+use parse_size::parse_size;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -18,6 +19,13 @@ fn parse_bool(s: &str) -> Result<bool, &'static str> {
         "true" => Ok(true),
         "false" => Ok(false),
         _ => Err("expected `true` or `false`"),
+    }
+}
+
+fn parse_bitrate(s: &str) -> Result<u64, String> {
+    match parse_size(s) {
+        Ok(v) => Ok(v / 8),
+        Err(_) => Err(format!("failed parsing {}", s)),
     }
 }
 
@@ -99,6 +107,10 @@ pub enum Subcommands {
         /// Send data from server to client
         #[arg(short, long)]
         reverse: bool,
+
+        /// Send data at the specified bitrate (can contain unit, e.g., 1MB, 1MiB, etc.)
+        #[arg(short, long, value_parser=parse_bitrate)]
+        bitrate: Option<u64>,
     },
     /// Run quicheperf server
     Server {

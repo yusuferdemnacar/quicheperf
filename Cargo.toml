@@ -41,6 +41,7 @@ zstd = { version = "0.12.0", features=["zstdmt"] }
 synchronized-writer = "1.1.11"
 git-testament = "0.2.1"
 clap = { version = "4.1.4", features = ["derive"] }
+parse-size = "1.0.0"
 
 # [lib]
 # crate-type = ["lib"]

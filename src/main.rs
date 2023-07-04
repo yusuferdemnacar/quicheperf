@@ -64,6 +64,7 @@ fn main() -> ExitCode {
             peer_addrs,
             duration,
             reverse,
+            bitrate: bitrate_target,
         } => {
             if args.local_addrs.len() != peer_addrs.len() {
                 eprintln!(
@@ -80,6 +81,7 @@ fn main() -> ExitCode {
                 password: args.password,
                 client_sending: !reverse,
                 duration: Duration::from_secs(duration),
+                bitrate_target: bitrate_target,
             };
 
             let res = match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {

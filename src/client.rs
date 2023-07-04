@@ -101,7 +101,6 @@ pub fn connect(
     mut config: quiche::Config,
     mut scheduler: impl MultipathScheduler,
 ) -> Result<(), ClientError> {
-    dbg!(&scheduler);
     let mut recv_buf = [0; 65535];
 
     let mut ui = ui::UI::new(tc.client_sending);
@@ -155,12 +154,13 @@ pub fn connect(
 
     let mut protocol: Option<Protocol> = None;
 
-    // Generate a random source connection ID for the connection.
-    let mut scid = [0; quiche::MAX_CONN_ID_LEN];
     let rng = SystemRandom::new();
-    rng.fill(&mut scid[..]).unwrap();
+    let scid = gen_scid(&rng);
 
-    let scid = quiche::ConnectionId::from_ref(&scid);
+    info!(
+        "connecting to {:} from {:} with scid {:?}",
+        peer_addrs[0], local_addr, scid
+    );
 
     // Create a QUIC connection and initiate handshake.
     let mut conn = quiche::connect(None, &scid, local_addr, peer_addrs[0], &mut config).unwrap();
@@ -187,11 +187,6 @@ pub fn connect(
         common::qlog_metadata(&mut conn, &tc, &config);
     }
 
-    info!(
-        "connecting to {:} from {:} with scid {:?}",
-        peer_addrs[0], local_addr, scid
-    );
-
     // Send initial message to server
     let mut write_buf = [0; MAX_DATAGRAM_SIZE];
     let (write, send_info) = conn.send(&mut write_buf).expect("initial send failed");
@@ -215,18 +210,18 @@ pub fn connect(
 
     'outer: loop {
         if !conn.is_in_early_data() || protocol.is_some() {
-            let timeout = std::cmp::min(conn.timeout(), ui.timeout()).or(conn.timeout());
+            let mut timeout = std::cmp::min(conn.timeout().unwrap_or(Duration::ZERO), ui.timeout());
+            if let Some(protocol) = protocol.as_ref() {
+                timeout = std::cmp::min(timeout, protocol.timeout());
+            }
             let poll_wait = Instant::now();
             log::trace!(
-                "poll_timeout= {}, conn= {:?},  ui= {:?}",
-                timeout
-                    .as_ref()
-                    .map(|x| Duration::as_millis(x))
-                    .unwrap_or(0),
+                "poll_timeout={:?}, conn={:?}, ui={:.2} ms",
+                timeout,
                 conn.timeout(),
-                ui.timeout()
+                ui.timeout().as_secs_f32() * 1000.0
             );
-            poll.poll(&mut events, timeout).unwrap();
+            poll.poll(&mut events, Some(timeout)).unwrap();
             log::trace!(
                 "poll duration= {:?} events_empty= {}",
                 poll_wait.elapsed(),
@@ -513,6 +508,13 @@ fn client_handle_path_events(conn: &mut quiche::Connection) {
             quiche::PathEvent::PeerPathStatus(..) => {}
         }
     }
+}
+
+// Generate a random source connection ID for the connection.
+fn gen_scid<T: SecureRandom>(rng: &T) -> quiche::ConnectionId<'static> {
+    let mut scid = [0; quiche::MAX_CONN_ID_LEN];
+    rng.fill(&mut scid[..]).unwrap();
+    quiche::ConnectionId::from_vec(scid.to_vec())
 }
 
 #[derive(Debug)]
