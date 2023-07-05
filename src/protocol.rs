@@ -88,14 +88,17 @@ impl Protocol {
 
     /// Check if the test duration expired and close connection if applicable
     pub fn close_after_duration(&mut self, conn: &mut Connection) -> bool {
-        let duration = match (&self.tc, self.start) {
+        if self.finished {
+            return true;
+        }
+        let duration_remaining = match (&self.tc, self.start) {
             (Some(tc), Some(start)) => tc
                 .duration
                 .checked_sub(start.elapsed())
                 .unwrap_or(std::time::Duration::ZERO),
             _ => return false,
         };
-        if duration > std::time::Duration::ZERO {
+        if duration_remaining > std::time::Duration::ZERO {
             return false;
         }
         debug!(
