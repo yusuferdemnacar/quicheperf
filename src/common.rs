@@ -115,6 +115,55 @@ pub fn set_socket_buf_size(
     }
 }
 
+#[cfg(target_os = "linux")]
+pub fn get_ifname_with_ip(addr: std::net::SocketAddr) -> Option<String> {
+    let ifaddrs_iter = match nix::ifaddrs::getifaddrs() {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to getifaddrs: {}", e);
+            return None;
+        }
+    };
+
+    for ifaddr in ifaddrs_iter {
+        if let Some(ifaddrstorage) = ifaddr.address {
+            match addr.ip() {
+                std::net::IpAddr::V4(ip) => {
+                    let ifaddr_ip = match ifaddrstorage.as_sockaddr_in() {
+                        Some(v) => v,
+                        None => continue,
+                    };
+                    if ifaddr_ip.ip().to_be_bytes() == ip.octets() {
+                        return Some(ifaddr.interface_name);
+                    }
+                }
+                std::net::IpAddr::V6(ip) => {
+                    let ifaddr_ip = match ifaddrstorage.as_sockaddr_in6() {
+                        Some(v) => v,
+                        None => continue,
+                    };
+                    if ifaddr_ip.ip().octets() == ip.octets() {
+                        return Some(ifaddr.interface_name);
+                    }
+                }
+            };
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "linux")]
+pub fn bind_socket_to_if(
+    socket: &mio::net::UdpSocket,
+    ifname: String,
+) -> Result<(), nix::errno::Errno> {
+    use nix::sys::socket::{setsockopt, sockopt::BindToDevice};
+    use std::{ffi::OsString, os::fd::AsRawFd};
+
+    setsockopt(socket.as_raw_fd(), BindToDevice, &OsString::from(ifname))
+}
+
 #[cfg(feature = "qlog")]
 pub fn set_qlog(
     conn: &mut quiche::Connection,

@@ -125,6 +125,14 @@ pub fn connect(
 
         #[cfg(target_os = "linux")]
         {
+            let ifname = common::get_ifname_with_ip(local_addr);
+            println!("bind {:?} to {:?}", local_addr, ifname);
+            if let Some(ifname) = ifname {
+                if let Err(e) = common::bind_socket_to_if(&socket, ifname) {
+                    error!("Unable to bind: {}", e);
+                }
+            }
+
             match common::set_socket_buf_size(&socket, common::UDPBufType::Rcv) {
                 Ok(v) => info!("Set the UDP rcv buf size to {}", v),
                 Err(e) => warn!("{}", e),
