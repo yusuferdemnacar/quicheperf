@@ -120,7 +120,8 @@ pub fn connect(
     // support binding to IN6ADDR_ANY for both v4 and v6.
     let mut addrs = Vec::new();
     for src_addr in local_addrs {
-        let socket = mio::net::UdpSocket::bind(src_addr).unwrap();
+        let socket = mio::net::UdpSocket::bind(src_addr)
+            .map_err(|e| ClientError::Other(format!("Failed binding to {}: {}", src_addr, e)))?;
         let local_addr = socket.local_addr().unwrap();
 
         #[cfg(target_os = "linux")]
