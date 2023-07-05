@@ -9,6 +9,8 @@ use std::sync::Mutex;
 use synchronized_writer::SynchronizedWriter;
 use zstd::stream::Encoder;
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
 use crate::protocol::TestConfig;
 
 pub const MAX_BUF_SIZE: usize = 65507;
@@ -116,7 +118,7 @@ pub fn set_socket_buf_size(
 }
 
 #[cfg(target_os = "linux")]
-pub fn get_ifname_with_ip(addr: std::net::SocketAddr) -> Option<String> {
+pub fn get_ifname_from_ip(addr: std::net::SocketAddr) -> Option<String> {
     let ifaddrs_iter = match nix::ifaddrs::getifaddrs() {
         Ok(v) => v,
         Err(e) => {
@@ -154,9 +156,39 @@ pub fn get_ifname_with_ip(addr: std::net::SocketAddr) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
+pub fn get_ip_from_ifname(ifname: &String) -> Option<SocketAddr> {
+    let ifaddrs_iter = match nix::ifaddrs::getifaddrs() {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to getifaddrs: {}", e);
+            return None;
+        }
+    };
+
+    for ifaddr in ifaddrs_iter {
+        if ifaddr.interface_name != *ifname {
+            continue;
+        }
+
+        if let Some(ifaddrstorage) = ifaddr.address {
+            if let Some(sockaddr) = ifaddrstorage.as_sockaddr_in() {
+                let ipaddr = Ipv4Addr::from(sockaddr.ip().to_be_bytes());
+                return Some(SocketAddr::new(IpAddr::V4(ipaddr), 0));
+            }
+            if let Some(sockaddr) = ifaddrstorage.as_sockaddr_in6() {
+                let ipaddr = Ipv6Addr::from(sockaddr.ip().octets());
+                return Some(SocketAddr::new(IpAddr::V6(ipaddr), 0));
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "linux")]
 pub fn bind_socket_to_if(
     socket: &mio::net::UdpSocket,
-    ifname: String,
+    ifname: &String,
 ) -> Result<(), nix::errno::Errno> {
     use nix::sys::socket::{setsockopt, sockopt::BindToDevice};
     use std::{ffi::OsString, os::fd::AsRawFd};

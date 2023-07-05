@@ -45,6 +45,7 @@ use git_testament::git_testament_macros;
 
 use clap::Parser;
 use quiche::scheduler;
+use std::net::SocketAddr;
 
 fn main() -> ExitCode {
     env_logger::builder()
@@ -58,6 +59,33 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(exitcode) => return exitcode,
     };
+
+    let local_addrs: Vec<SocketAddr> = args
+        .local_addrs
+        .iter()
+        .map(|local_addr| {
+            let socket_parse_err = match local_addr.parse::<SocketAddr>() {
+                Ok(v) => return Some(v),
+                Err(e) => e,
+            };
+
+            match common::get_ip_from_ifname(local_addr) {
+                Some(v) => {
+                    println!("{}: use local IP {}", local_addr, v);
+                    Some(v)
+                }
+                None => {
+                    eprintln!(
+                        "Could neither convert {} to IP nor find interface IP address: {}",
+                        local_addr, socket_parse_err
+                    );
+                    None
+                }
+            }
+        })
+        .filter(|v| v.is_some())
+        .map(|v| v.unwrap())
+        .collect();
 
     match args.commands {
         cli::Subcommands::Client {
@@ -76,7 +104,7 @@ fn main() -> ExitCode {
             }
 
             let tc = TestConfig {
-                local_addrs: args.local_addrs.iter().map(|s| s.to_string()).collect(),
+                local_addrs: local_addrs.iter().map(|s| s.to_string()).collect(),
                 peer_addrs: peer_addrs.iter().map(|s| s.to_string()).collect(),
                 password: args.password,
                 client_sending: !reverse,
@@ -85,15 +113,11 @@ fn main() -> ExitCode {
             };
 
             let res = match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
-                cli::SchedulerOpts::Blest => client::connect(
-                    args.local_addrs,
-                    peer_addrs,
-                    tc,
-                    config,
-                    scheduler::Blest::new(),
-                ),
+                cli::SchedulerOpts::Blest => {
+                    client::connect(local_addrs, peer_addrs, tc, config, scheduler::Blest::new())
+                }
                 cli::SchedulerOpts::MinRTT => client::connect(
-                    args.local_addrs,
+                    local_addrs,
                     peer_addrs,
                     tc,
                     config,
@@ -128,18 +152,12 @@ fn main() -> ExitCode {
             };
 
             match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
-                cli::SchedulerOpts::Blest => server::listen(
-                    args.local_addrs,
-                    args.password,
-                    config,
-                    scheduler::Blest::new(),
-                ),
-                cli::SchedulerOpts::MinRTT => server::listen(
-                    args.local_addrs,
-                    args.password,
-                    config,
-                    scheduler::MinRTT::new(),
-                ),
+                cli::SchedulerOpts::Blest => {
+                    server::listen(local_addrs, args.password, config, scheduler::Blest::new())
+                }
+                cli::SchedulerOpts::MinRTT => {
+                    server::listen(local_addrs, args.password, config, scheduler::MinRTT::new())
+                }
             };
         }
     }

@@ -126,11 +126,12 @@ pub fn connect(
 
         #[cfg(target_os = "linux")]
         {
-            let ifname = common::get_ifname_with_ip(local_addr);
-            println!("bind {:?} to {:?}", local_addr, ifname);
+            let ifname = common::get_ifname_from_ip(local_addr);
             if let Some(ifname) = ifname {
-                if let Err(e) = common::bind_socket_to_if(&socket, ifname) {
-                    error!("Unable to bind: {}", e);
+                if let Err(e) = common::bind_socket_to_if(&socket, &ifname) {
+                    eprintln!("{}: unable to bind {}: {}", ifname, local_addr, e);
+                } else {
+                    println!("{}: bind {}", ifname, local_addr);
                 }
             }
 
