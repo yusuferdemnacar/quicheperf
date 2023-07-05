@@ -376,12 +376,13 @@ pub fn connect(
                         local_probe_addr, peer_probe_addr, e
                     ),
                 }
-            } else {
-                warn!(
-                    "{:}->{:} Failed to probe path: No DCID available.",
-                    local_probe_addr, peer_probe_addr
-                );
             }
+            // else if app_data_start.elapsed() > Duration::from_secs(3) {
+            //     warn!(
+            //         "{:}->{:} Failed to probe path: No DCID available.",
+            //         local_probe_addr, peer_probe_addr
+            //     );
+            // }
         }
 
         // Generate outgoing QUIC packets and send them on the UDP socket.
