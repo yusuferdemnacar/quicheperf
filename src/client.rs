@@ -218,11 +218,14 @@ pub fn connect(
     let mut probed_paths = 1;
 
     'outer: loop {
+        let mut is_conn_timeout = false;
         if !conn.is_in_early_data() || protocol.is_some() {
-            let mut timeout = std::cmp::min(conn.timeout().unwrap_or(Duration::ZERO), ui.timeout());
+            let conn_timeout = conn.timeout().unwrap_or(Duration::ZERO);
+            let mut timeout = std::cmp::min(conn_timeout, ui.timeout());
             if let Some(protocol) = protocol.as_ref() {
                 timeout = std::cmp::min(timeout, protocol.timeout());
             }
+            is_conn_timeout = conn_timeout == timeout;
             let poll_wait = Instant::now();
             log::trace!(
                 "poll_timeout={:?}, conn={:?}, ui={:.2} ms",
@@ -245,8 +248,11 @@ pub fn connect(
         // If the event loop reported no events, it means that the timeout
         // has expired, so handle it without attempting to read packets. We
         // will then proceed with the send loop.
-        if events.is_empty() {
-            trace!("timed out");
+        if events.is_empty() && is_conn_timeout {
+            debug!(
+                "timed out, protocol_timeout={:?}",
+                protocol.as_ref().and_then(|p| Some(p.timeout()))
+            );
             conn.on_timeout();
         }
 

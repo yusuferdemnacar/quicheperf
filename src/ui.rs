@@ -97,12 +97,13 @@ impl UI {
         );
     }
 
+    /// Returns the duration until the next per second update needs to be printed. Only starts counting down once update() has been called once.
     pub fn timeout(&self) -> Duration {
         match self.last_update {
             Some(last_update) => UPDATE_FREQ
                 .checked_sub(last_update.elapsed())
                 .unwrap_or(Duration::ZERO),
-            None => Duration::ZERO,
+            None => Duration::MAX,
         }
     }
 
