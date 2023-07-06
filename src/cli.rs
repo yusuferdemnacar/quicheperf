@@ -1,5 +1,6 @@
 use parse_size::parse_size;
 use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 
 use clap::ArgAction;
@@ -26,6 +27,13 @@ fn parse_bitrate(s: &str) -> Result<u64, String> {
     match parse_size(s) {
         Ok(v) => Ok(v / 8),
         Err(_) => Err(format!("failed parsing {}", s)),
+    }
+}
+
+fn resolve_addr(s: &str) -> Result<SocketAddr, String> {
+    match s.to_socket_addrs() {
+        Ok(mut it) => it.next().ok_or(format!("failed to resolve {}", s)),
+        Err(e) => Err(format!("failed to resolve {}: {}", s, e)),
     }
 }
 
@@ -97,7 +105,7 @@ pub enum Subcommands {
     /// Run quicheperf client
     Client {
         /// The remote address(es) to connect to
-        #[arg(short = 'c', required = true)]
+        #[arg(short = 'c', required = true, value_parser=resolve_addr)]
         peer_addrs: Vec<SocketAddr>,
 
         /// Time in seconds to run test for
