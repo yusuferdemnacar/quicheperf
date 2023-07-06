@@ -220,24 +220,30 @@ pub fn connect(
 
     'outer: loop {
         let mut is_conn_timeout = false;
+        let mut timeout_duration = Duration::ZERO;
         if !conn.is_in_early_data() || protocol.is_some() {
             let conn_timeout = conn.timeout().unwrap_or(Duration::ZERO);
-            let mut timeout = std::cmp::min(conn_timeout, ui.timeout());
-            if let Some(protocol) = protocol.as_ref() {
-                timeout = std::cmp::min(timeout, protocol.timeout());
-            }
+            let ui_timeout = ui.timeout();
+            let protocol_timeout = if let Some(protocol) = protocol.as_ref() {
+                protocol.timeout()
+            } else {
+                Duration::MAX
+            };
+            let timeout = std::cmp::min(std::cmp::min(conn_timeout, ui_timeout), protocol_timeout);
             is_conn_timeout = conn_timeout == timeout;
             let poll_wait = Instant::now();
             log::trace!(
-                "poll_timeout={:?}, conn={:?}, ui={:.2} ms",
+                "poll_timeout={:?}: conn={:?}, ui={:?}, protocol={:?}",
                 timeout,
-                conn.timeout(),
-                ui.timeout().as_secs_f32() * 1000.0
+                conn_timeout,
+                ui_timeout,
+                protocol_timeout,
             );
             poll.poll(&mut events, Some(timeout)).unwrap();
+            timeout_duration = poll_wait.elapsed();
             log::trace!(
-                "poll duration= {:?} events_empty= {}",
-                poll_wait.elapsed(),
+                "poll duration was {:?} events_empty={}",
+                timeout_duration,
                 events.is_empty()
             );
         }
@@ -250,10 +256,7 @@ pub fn connect(
         // has expired, so handle it without attempting to read packets. We
         // will then proceed with the send loop.
         if events.is_empty() && is_conn_timeout {
-            debug!(
-                "timed out, protocol_timeout={:?}",
-                protocol.as_ref().and_then(|p| Some(p.timeout()))
-            );
+            trace!("timed out after {:?}", timeout_duration);
             conn.on_timeout();
         }
 
@@ -310,7 +313,7 @@ pub fn connect(
             }
         }
 
-        trace!("done reading");
+        // trace!("done reading");
 
         if conn.is_closed() {
             break 'outer;
