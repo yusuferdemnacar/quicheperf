@@ -43,6 +43,7 @@ pub struct UI {
     client_sending: bool,
     start: Instant,
     last_update: Option<Instant>,
+    draining_line_printed: bool,
 
     sent: usize,
     recv: usize,
@@ -59,6 +60,7 @@ impl UI {
             client_sending,
             start: Instant::now(),
             last_update: None,
+            draining_line_printed: false,
 
             sent: 0,
             recv: 0,
@@ -79,13 +81,17 @@ impl UI {
         let test_type = if local_addrs.len() > 1 { "MP" } else { "SP" };
 
         let arrow = if tc.client_sending { "->" } else { "<-" };
-        let addr_it = local_addrs.iter().zip(peer_addrs.iter());
-        let addr_pairs = addr_it
-            .map(|(l, p)| l.to_string() + arrow + &p.to_string())
-            .join(", ");
+        let addr_pairs = local_addrs
+            .iter()
+            .zip(peer_addrs.iter())
+            .enumerate()
+            .map(|(path_id, (l, p))| format!("- P{}: {}\t{} {}", path_id, l, arrow, p))
+            .join("\n");
+
+        let local_time = chrono::Local::now();
 
         println!(
-            "{direction} {test_type} test for {duration:?}: {addr_pairs}",
+            "{direction} {test_type} test for {duration:?} at {time}\n{addr_pairs}",
             direction = if tc.client_sending {
                 "uplink"
             } else {
@@ -93,7 +99,8 @@ impl UI {
             },
             test_type = test_type,
             addr_pairs = addr_pairs,
-            duration = tc.duration
+            duration = tc.duration,
+            time = local_time.format("%y-%m-%dT%H:%M:%S")
         );
     }
 
@@ -107,14 +114,18 @@ impl UI {
         }
     }
 
+    /// Called during the test and determines if an per-second udpate line should be printed.
     pub fn update(&mut self, conn: &quiche::Connection) {
         let update_due = self.last_update.map_or(true, |v| v.elapsed() > UPDATE_FREQ);
         if !update_due || conn.is_closed() {
-            // || conn.is_draining()
             return;
         }
-
         self.print_per_second_update(conn);
+
+        if conn.is_draining() && !self.draining_line_printed {
+            println!("Connection is draining ...");
+            self.draining_line_printed = true;
+        }
 
         self.last_update = Some(Instant::now());
     }
@@ -124,8 +135,8 @@ impl UI {
         if self.last_update.is_none() || self.paths.len() < npaths {
             if npaths < 2 {
                 println!(
-                    "| {:<3} | {:<10} | {:<18} |",
-                    "sec", "P0 Mbps", "P0 Lost/Total (sp)",
+                    "| {:<3} | {:<5} | {:<5} | {:<10} | {:<18} |",
+                    "sec", "time", "FC_av", "P0 Mbps", "P0 Lost/Total (sp)",
                 );
             } else {
                 let mut pstr = String::new();
@@ -133,7 +144,10 @@ impl UI {
                     pstr.push_str(&format!("| P{}  Mbps   | P{} Lost/Total (sp) ", i, i));
                 }
 
-                println!("| {:<3} | {:<10} {}|", "sec", "Total Mbps", pstr,);
+                println!(
+                    "| {:<3} | {:<5} | {:<10} | {:<5} {}|",
+                    "sec", "time", "Total Mbps", "FC_av", pstr,
+                );
             }
         }
 
@@ -198,15 +212,25 @@ impl UI {
             pstats_prev.recv = pstats.recv;
         }
 
-        if npaths < 2 {
-            println!("| {:>3} {}|", self.start.elapsed().as_secs(), pstr);
+        let stream_0_capacity = conn.stream_stats(0)
+            .map_or(0, |s| s.send_capacity);
+        let (fc_value, fc_unit) = if stream_0_capacity >= 1_000_000 {
+            (stream_0_capacity / (1e6 as u64), "M")
+        } else if stream_0_capacity >= 1_000 {
+            (stream_0_capacity / (1e3 as u64), "K")
         } else {
-            println!(
-                "| {:>3} | {:>10.2} {}|",
-                self.start.elapsed().as_secs(),
-                tput,
-                pstr
-            );
+            (stream_0_capacity, " ")
+        };
+
+        let time = chrono::Local::now().format("%M:%S");
+        let elapsed = self.start.elapsed().as_secs();
+
+        if npaths < 2 {
+            println!("| {:>3} | {:>5} | {:>4}{} {}|",
+                elapsed, time, fc_value, fc_unit, pstr);
+        } else {
+            println!("| {:>3} | {:>5} | {:>10.2} | {:>4}{} {}|",
+                elapsed, time, tput, fc_value, fc_unit, pstr);
         }
 
         self.sent_bytes = stats.sent_bytes;
@@ -238,6 +262,8 @@ impl UI {
 
             pstr.push_str(&format!("| {:>10.2} | {:>17.4}% ", ptput, plost_perc));
         }
+
+        println!("{:->88}", "");
 
         let first_col = if self.client_sending { "Snt" } else { "Rcv" };
         if conn.path_stats().count() < 2 {
