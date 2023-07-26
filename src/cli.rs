@@ -12,6 +12,7 @@ use clap::ValueEnum;
 pub enum SchedulerOpts {
     Blest,
     MinRTT,
+    RoundRobin,
 }
 
 // Inspired by https://github.com/clap-rs/clap/blob/dd5e6b23131f16ef8b090a8482f1b97c6a693498/clap_derive/examples/true_or_false.rs

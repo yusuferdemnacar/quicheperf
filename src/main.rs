@@ -71,7 +71,7 @@ fn main() -> ExitCode {
 
             match common::get_ip_from_ifname(local_addr) {
                 Some(v) => {
-                    println!("{}: use local IP {}", local_addr, v);
+                    info!("{}: use local IP {}", local_addr, v);
                     Some(v)
                 }
                 None => {
@@ -123,6 +123,13 @@ fn main() -> ExitCode {
                     config,
                     scheduler::MinRTT::new(),
                 ),
+                cli::SchedulerOpts::RoundRobin => client::connect(
+                    local_addrs,
+                    peer_addrs,
+                    tc,
+                    config,
+                    scheduler::RoundRobin::new(),
+                ),
             };
 
             return match res {
@@ -158,6 +165,12 @@ fn main() -> ExitCode {
                 cli::SchedulerOpts::MinRTT => {
                     server::listen(local_addrs, args.password, config, scheduler::MinRTT::new())
                 }
+                cli::SchedulerOpts::RoundRobin => server::listen(
+                    local_addrs,
+                    args.password,
+                    config,
+                    scheduler::RoundRobin::new(),
+                ),
             };
         }
     }
