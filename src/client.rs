@@ -315,6 +315,8 @@ pub fn connect(
 
         // trace!("done reading");
 
+        // Skip draining on the client
+        // if conn.is_draining() || conn.is_closed() {
         if conn.is_closed() {
             break 'outer;
         }
