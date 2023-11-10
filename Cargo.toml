@@ -42,6 +42,7 @@ synchronized-writer = "1.1.11"
 git-testament = "0.2.1"
 clap = { version = "4.1.4", features = ["derive"] }
 parse-size = "1.0.0"
+ctrlc = "3.4.0"
 
 # [lib]
 # crate-type = ["lib"]

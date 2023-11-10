@@ -1,4 +1,7 @@
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use crate::common;
 use crate::protocol::Protocol;
@@ -150,6 +153,7 @@ pub fn listen(
     password: Option<String>,
     mut config: quiche::Config,
     mut scheduler: impl MultipathScheduler,
+    terminate: Arc<AtomicBool>,
 ) -> ! {
     let mut buf = [0; MAX_BUF_SIZE];
     let mut out = [0; MAX_BUF_SIZE];
@@ -219,6 +223,13 @@ pub fn listen(
     let mut continue_write = false;
 
     loop {
+        if terminate.load(Ordering::SeqCst) {
+            info!("Termination signal received, closing connection");
+            for c in clients.values_mut().into_iter() {
+                c.conn.close(true, 0x1, b"user terminated").ok();
+            }
+        }
+
         // Find the shorter timeout from all the active connections.
         //
         // TODO: use event loop that properly supports timers

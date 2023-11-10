@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::io;
+use std::io::{Result, Write};
 use std::net::SocketAddr;
 use std::time::Duration;
 use std::time::Instant;
@@ -77,7 +79,7 @@ impl UI {
         local_addrs: &Vec<SocketAddr>,
         peer_addrs: &Vec<SocketAddr>,
         tc: &TestConfig,
-    ) {
+    ) -> Result<()> {
         let test_type = if local_addrs.len() > 1 { "MP" } else { "SP" };
 
         let arrow = if tc.client_sending { "->" } else { "<-" };
@@ -90,7 +92,8 @@ impl UI {
 
         let local_time = chrono::Local::now();
 
-        println!(
+        writeln!(
+            io::stdout(),
             "{direction} {test_type} test for {duration:?} at {time}\n{addr_pairs}",
             direction = if tc.client_sending {
                 "uplink"
@@ -101,7 +104,9 @@ impl UI {
             addr_pairs = addr_pairs,
             duration = tc.duration,
             time = local_time.format("%y-%m-%dT%H:%M:%S")
-        );
+        )?;
+
+        Ok(())
     }
 
     /// Returns the duration until the next per second update needs to be printed. Only starts counting down once update() has been called once.
@@ -115,39 +120,51 @@ impl UI {
     }
 
     /// Called during the test and determines if an per-second udpate line should be printed.
-    pub fn update(&mut self, conn: &quiche::Connection) {
+    pub fn update(&mut self, conn: &quiche::Connection) -> Result<()> {
         let update_due = self.last_update.map_or(true, |v| v.elapsed() > UPDATE_FREQ);
         if !update_due || conn.is_closed() {
-            return;
+            return Ok(());
         }
-        self.print_per_second_update(conn);
+        self.print_per_second_update(conn)?;
 
         if conn.is_draining() && !self.draining_line_printed {
-            println!("Connection is draining ...");
+            writeln!(io::stdout(), "Connection is draining ...")?;
             self.draining_line_printed = true;
         }
 
         self.last_update = Some(Instant::now());
+
+        Ok(())
     }
 
-    fn print_per_second_update(&mut self, conn: &quiche::Connection) {
+    fn print_per_second_update(&mut self, conn: &quiche::Connection) -> Result<()> {
         let npaths = conn.path_stats().count();
         if self.last_update.is_none() || self.paths.len() < npaths {
             if npaths < 2 {
-                println!(
+                writeln!(
+                    io::stdout(),
                     "| {:<3} | {:<5} | {:<5} | {:<10} | {:<18} |",
-                    "sec", "time", "FC_av", "P0 Mbps", "P0 Lost/Total (sp)",
-                );
+                    "sec",
+                    "time",
+                    "FC_av",
+                    "P0 Mbps",
+                    "P0 Lost/Total (sp)",
+                )?;
             } else {
                 let mut pstr = String::new();
                 for i in 0..npaths {
                     pstr.push_str(&format!("| P{}  Mbps   | P{} Lost/Total (sp) ", i, i));
                 }
 
-                println!(
+                writeln!(
+                    io::stdout(),
                     "| {:<3} | {:<5} | {:<10} | {:<5} {}|",
-                    "sec", "time", "Total Mbps", "FC_av", pstr,
-                );
+                    "sec",
+                    "time",
+                    "Total Mbps",
+                    "FC_av",
+                    pstr,
+                )?;
             }
         }
 
@@ -212,8 +229,7 @@ impl UI {
             pstats_prev.recv = pstats.recv;
         }
 
-        let stream_0_capacity = conn.stream_stats(0)
-            .map_or(0, |s| s.send_capacity);
+        let stream_0_capacity = conn.stream_stats(0).map_or(0, |s| s.send_capacity);
         let (fc_value, fc_unit) = if stream_0_capacity >= 1_000_000 {
             (stream_0_capacity / (1e6 as u64), "M")
         } else if stream_0_capacity >= 1_000 {
@@ -226,11 +242,26 @@ impl UI {
         let elapsed = self.start.elapsed().as_secs();
 
         if npaths < 2 {
-            println!("| {:>3} | {:>5} | {:>4}{} {}|",
-                elapsed, time, fc_value, fc_unit, pstr);
+            writeln!(
+                io::stdout(),
+                "| {:>3} | {:>5} | {:>4}{} {}|",
+                elapsed,
+                time,
+                fc_value,
+                fc_unit,
+                pstr
+            )?;
         } else {
-            println!("| {:>3} | {:>5} | {:>10.2} | {:>4}{} {}|",
-                elapsed, time, tput, fc_value, fc_unit, pstr);
+            writeln!(
+                io::stdout(),
+                "| {:>3} | {:>5} | {:>10.2} | {:>4}{} {}|",
+                elapsed,
+                time,
+                tput,
+                fc_value,
+                fc_unit,
+                pstr
+            )?;
         }
 
         self.sent_bytes = stats.sent_bytes;
@@ -238,9 +269,11 @@ impl UI {
         self.lost = stats.lost;
         self.sent = stats.sent;
         self.recv = stats.recv;
+
+        Ok(())
     }
 
-    pub fn print_summary(&mut self, conn: &quiche::Connection) {
+    pub fn print_summary(&mut self, conn: &quiche::Connection) -> Result<()> {
         let stats = conn.stats();
 
         let tput_total = if self.client_sending {
@@ -263,16 +296,28 @@ impl UI {
             pstr.push_str(&format!("| {:>10.2} | {:>17.4}% ", ptput, plost_perc));
         }
 
-        println!("{:->88}", "");
+        writeln!(io::stdout(), "{:->88}", "")?;
 
         let first_col = if self.client_sending { "Snt" } else { "Rcv" };
         if conn.path_stats().count() < 2 {
-            println!(
+            writeln!(
+                io::stdout(),
                 "| {:>3} | {:>10.2} | {:>5} {:>11.4}% |",
-                first_col, tput_total, stats.lost, lost_perc
-            );
+                first_col,
+                tput_total,
+                stats.lost,
+                lost_perc
+            )?;
         } else {
-            println!("| {:>3} | {:>10.2} {}|", first_col, tput_total, pstr);
+            writeln!(
+                io::stdout(),
+                "| {:>3} | {:>10.2} {}|",
+                first_col,
+                tput_total,
+                pstr
+            )?;
         }
+
+        Ok(())
     }
 }

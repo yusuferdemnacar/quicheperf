@@ -37,6 +37,8 @@ mod server;
 mod ui;
 
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::protocol::TestConfig;
@@ -59,6 +61,14 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(exitcode) => return exitcode,
     };
+
+    let terminate = Arc::new(AtomicBool::new(false));
+    let t = terminate.clone();
+
+    ctrlc::set_handler(move || {
+        t.store(true, Ordering::SeqCst);
+    })
+    .expect("Error setting Ctrl-C handler");
 
     let local_addrs: Vec<SocketAddr> = args
         .local_addrs
@@ -113,15 +123,21 @@ fn main() -> ExitCode {
             };
 
             let res = match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
-                cli::SchedulerOpts::Blest => {
-                    client::connect(local_addrs, peer_addrs, tc, config, scheduler::Blest::new())
-                }
+                cli::SchedulerOpts::Blest => client::connect(
+                    local_addrs,
+                    peer_addrs,
+                    tc,
+                    config,
+                    scheduler::Blest::new(),
+                    terminate,
+                ),
                 cli::SchedulerOpts::MinRTT => client::connect(
                     local_addrs,
                     peer_addrs,
                     tc,
                     config,
                     scheduler::MinRTT::new(),
+                    terminate,
                 ),
                 cli::SchedulerOpts::RoundRobin => client::connect(
                     local_addrs,
@@ -129,6 +145,7 @@ fn main() -> ExitCode {
                     tc,
                     config,
                     scheduler::RoundRobin::new(),
+                    terminate,
                 ),
             };
 
@@ -159,17 +176,26 @@ fn main() -> ExitCode {
             };
 
             match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
-                cli::SchedulerOpts::Blest => {
-                    server::listen(local_addrs, args.password, config, scheduler::Blest::new())
-                }
-                cli::SchedulerOpts::MinRTT => {
-                    server::listen(local_addrs, args.password, config, scheduler::MinRTT::new())
-                }
+                cli::SchedulerOpts::Blest => server::listen(
+                    local_addrs,
+                    args.password,
+                    config,
+                    scheduler::Blest::new(),
+                    terminate,
+                ),
+                cli::SchedulerOpts::MinRTT => server::listen(
+                    local_addrs,
+                    args.password,
+                    config,
+                    scheduler::MinRTT::new(),
+                    terminate,
+                ),
                 cli::SchedulerOpts::RoundRobin => server::listen(
                     local_addrs,
                     args.password,
                     config,
                     scheduler::RoundRobin::new(),
+                    terminate,
                 ),
             };
         }

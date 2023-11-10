@@ -9,6 +9,9 @@ use ring::rand::*;
 use slab::Slab;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -100,11 +103,12 @@ pub fn connect(
     tc: TestConfig,
     mut config: quiche::Config,
     mut scheduler: impl MultipathScheduler,
+    terminate: Arc<AtomicBool>,
 ) -> Result<(), ClientError> {
     let mut recv_buf = [0; 65535];
 
     let mut ui = ui::UI::new(tc.client_sending);
-    ui.new_test(&local_addrs, &peer_addrs, &tc);
+    ui.new_test(&local_addrs, &peer_addrs, &tc).ok();
 
     let mut sockets: Slab<SocketState> = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
     let mut src_addr_tokens = HashMap::new();
@@ -239,7 +243,12 @@ pub fn connect(
                 ui_timeout,
                 protocol_timeout,
             );
-            poll.poll(&mut events, Some(timeout)).unwrap();
+            if let Err(e) = poll.poll(&mut events, Some(timeout)) {
+                if e.kind() != std::io::ErrorKind::Interrupted {
+                    error!("Poll returned error: {}", e);
+                    break;
+                }
+            }
             timeout_duration = poll_wait.elapsed();
             log::trace!(
                 "poll duration was {:?} events_empty={}",
@@ -249,7 +258,7 @@ pub fn connect(
         }
 
         if protocol.is_some() {
-            ui.update(&conn);
+            ui.update(&conn).ok();
         }
 
         // If the event loop reported no events, it means that the timeout
@@ -314,6 +323,12 @@ pub fn connect(
         }
 
         // trace!("done reading");
+
+        if terminate.load(Ordering::SeqCst) {
+            if let Ok(()) = conn.close(true, 0x1, b"user terminated") {
+                info!("Termination signal received, closing connection");
+            }
+        }
 
         // Skip draining on the client
         // if conn.is_draining() || conn.is_closed() {
@@ -463,7 +478,7 @@ pub fn connect(
     );
 
     if !conn.is_established() {
-        error!("connection timed out after {:?}", app_data_start.elapsed(),);
+        error!("connection timed out after {:?}", app_data_start.elapsed());
 
         return Err(ClientError::HandshakeFail);
     }
@@ -481,7 +496,7 @@ pub fn connect(
     }
 
     if protocol.is_some() {
-        ui.print_summary(&conn);
+        ui.print_summary(&conn).ok();
     }
 
     #[cfg(feature = "qlog")]
