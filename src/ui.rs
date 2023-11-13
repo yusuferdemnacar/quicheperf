@@ -74,18 +74,14 @@ impl UI {
         }
     }
 
-    pub fn new_test(
-        &self,
-        local_addrs: &Vec<SocketAddr>,
-        peer_addrs: &Vec<SocketAddr>,
-        tc: &TestConfig,
-    ) -> Result<()> {
-        let test_type = if local_addrs.len() > 1 { "MP" } else { "SP" };
+    pub fn new_test(&self, tc: &TestConfig) -> Result<()> {
+        let test_type = if tc.local_addrs.len() > 1 { "MP" } else { "SP" };
 
         let arrow = if tc.client_sending { "->" } else { "<-" };
-        let addr_pairs = local_addrs
+        let addr_pairs = tc
+            .local_addrs
             .iter()
-            .zip(peer_addrs.iter())
+            .zip(tc.peer_addrs.iter())
             .enumerate()
             .map(|(path_id, (l, p))| format!("- P{}: {}\t{} {}", path_id, l, arrow, p))
             .join("\n");
@@ -119,7 +115,7 @@ impl UI {
         }
     }
 
-    /// Called during the test and determines if an per-second udpate line should be printed.
+    /// Called during the test and determines if an per-second update line should be printed.
     pub fn update(&mut self, conn: &quiche::Connection) -> Result<()> {
         let update_due = self.last_update.map_or(true, |v| v.elapsed() > UPDATE_FREQ);
         if !update_due || conn.is_closed() {

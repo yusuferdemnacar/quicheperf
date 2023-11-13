@@ -1,19 +1,20 @@
 use crate::common;
 use crate::common::*;
-use crate::protocol::Protocol;
-use crate::protocol::TestConfig;
-use crate::ui;
 use itertools::Itertools;
 use quiche::scheduler::MultipathScheduler;
 use ring::rand::*;
 use slab::Slab;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+
+#[derive(Debug)]
+pub enum ClientError {
+    HandshakeFail,
+    IOFail(String),
+    Other(String),
+}
 
 struct SocketState {
     socket: mio::net::UdpSocket,
@@ -88,7 +89,7 @@ impl SocketState {
                     return Ok(0);
                 }
 
-                return Err(ClientError::Other(format!(
+                return Err(ClientError::IOFail(format!(
                     "try_send: {} -> {}: send() failed: {:?}",
                     local_addr, peer_addr, e
                 )));
@@ -97,184 +98,203 @@ impl SocketState {
     }
 }
 
-pub fn connect(
+pub struct Client {
     local_addrs: Vec<SocketAddr>,
     peer_addrs: Vec<SocketAddr>,
-    tc: TestConfig,
-    mut config: quiche::Config,
-    mut scheduler: impl MultipathScheduler,
-    terminate: Arc<AtomicBool>,
-    mut psu: PathStatusUpdater,
-) -> Result<(), ClientError> {
-    let mut recv_buf = [0; 65535];
+    scheduler: Box<dyn MultipathScheduler>,
 
-    let mut ui = ui::UI::new(tc.client_sending);
-    ui.new_test(&local_addrs, &peer_addrs, &tc).ok();
+    pub conn: quiche::Connection,
+    sockets: Slab<SocketState>,
+    src_addr_tokens: HashMap<SocketAddr, usize>,
+    app_data_start: Option<Instant>,
+    pub recv_buf: [u8; 65535],
+    rng: SystemRandom,
+    probed_paths: usize,
 
-    let mut sockets: Slab<SocketState> = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
-    let mut src_addr_tokens = HashMap::new();
+    poll: mio::Poll,
+    events: mio::Events,
+}
 
-    // Setup the event loop.
-    let mut poll = mio::Poll::new().unwrap();
-    let mut events = mio::Events::with_capacity(1024);
+impl Client {
+    pub fn new(
+        local_addrs: Vec<SocketAddr>,
+        peer_addrs: Vec<SocketAddr>,
+        mut config: quiche::Config,
+        scheduler: Box<dyn MultipathScheduler>,
+    ) -> Result<Client, ClientError> {
+        let mut sockets = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
+        let mut src_addr_tokens = HashMap::new();
+        let poll = mio::Poll::new().unwrap();
+        // Create the UDP socket backing the QUIC connection, and register it with
+        // the event loop. Either we provided addresses, or we rely on the default
+        // INADDR_IN or IN6ADDR_ANY depending on the IP family of the
+        // server address. This is needed on macOS and BSD variants that don't
+        // support binding to IN6ADDR_ANY for both v4 and v6.
+        let mut addrs = Vec::new();
+        for src_addr in local_addrs.into_iter() {
+            let socket = mio::net::UdpSocket::bind(src_addr).map_err(|e| {
+                ClientError::Other(format!("Failed binding to {}: {}", src_addr, e))
+            })?;
+            let local_addr = socket.local_addr().unwrap();
 
-    // Create the UDP socket backing the QUIC connection, and register it with
-    // the event loop. Either we provided addresses, or we rely on the default
-    // INADDR_IN or IN6ADDR_ANY depending on the IP family of the
-    // server address. This is needed on macOS and BSD variants that don't
-    // support binding to IN6ADDR_ANY for both v4 and v6.
-    let mut addrs = Vec::new();
-    for src_addr in local_addrs {
-        let socket = mio::net::UdpSocket::bind(src_addr)
-            .map_err(|e| ClientError::Other(format!("Failed binding to {}: {}", src_addr, e)))?;
-        let local_addr = socket.local_addr().unwrap();
-
-        #[cfg(target_os = "linux")]
-        {
-            let ifname = common::get_ifname_from_ip(local_addr);
-            if let Some(ifname) = ifname {
-                if let Err(e) = common::bind_socket_to_if(&socket, &ifname) {
-                    eprintln!("{}: unable to bind {}: {}", ifname, local_addr, e);
-                } else {
-                    println!("{}: bind {}", ifname, local_addr);
+            #[cfg(target_os = "linux")]
+            {
+                let ifname = common::get_ifname_from_ip(local_addr);
+                if let Some(ifname) = ifname {
+                    if let Err(e) = common::bind_socket_to_if(&socket, &ifname) {
+                        eprintln!("{}: unable to bind {}: {}", ifname, local_addr, e);
+                    } else {
+                        println!("{}: bind {}", ifname, local_addr);
+                    }
                 }
+
+                match common::set_socket_buf_size(&socket, common::UDPBufType::Rcv) {
+                    Ok(v) => info!("Set the UDP rcv buf size to {}", v),
+                    Err(e) => warn!("{}", e),
+                };
+                match common::set_socket_buf_size(&socket, common::UDPBufType::Snd) {
+                    Ok(v) => info!("Set the UDP snd buf size to {}", v),
+                    Err(e) => warn!("{}", e),
+                };
             }
 
-            match common::set_socket_buf_size(&socket, common::UDPBufType::Rcv) {
-                Ok(v) => info!("Set the UDP rcv buf size to {}", v),
-                Err(e) => warn!("{}", e),
-            };
-            match common::set_socket_buf_size(&socket, common::UDPBufType::Snd) {
-                Ok(v) => info!("Set the UDP snd buf size to {}", v),
-                Err(e) => warn!("{}", e),
-            };
+            let socket_state = SocketState::new(socket);
+            let token = sockets.insert(socket_state);
+            src_addr_tokens.insert(local_addr, token);
+            addrs.push(local_addr);
+            poll.registry()
+                .register(
+                    &mut sockets[token].socket,
+                    mio::Token(token),
+                    mio::Interest::READABLE.add(mio::Interest::WRITABLE),
+                )
+                .unwrap();
+        }
+        let local_addr = *addrs.first().unwrap();
+
+        config.log_keys();
+
+        // Create a QUIC connection and initiate handshake.
+        let rng = SystemRandom::new();
+        let scid = gen_scid(&rng);
+        let mut conn =
+            quiche::connect(None, &scid, local_addr, peer_addrs[0], &mut config).unwrap();
+
+        let mut keylog = configure_keylog();
+        if let Some(keylog) = &mut keylog {
+            if let Ok(keylog) = keylog.try_clone() {
+                conn.set_keylog(Box::new(keylog));
+            }
         }
 
-        let socket_state = SocketState::new(socket);
-        let token = sockets.insert(socket_state);
-        src_addr_tokens.insert(local_addr, token);
-        addrs.push(local_addr);
-        poll.registry()
-            .register(
-                &mut sockets[token].socket,
-                mio::Token(token),
-                mio::Interest::READABLE.add(mio::Interest::WRITABLE),
-            )
-            .unwrap();
-    }
-    let local_addr = *addrs.first().unwrap();
-
-    let mut keylog = configure_keylog();
-    config.log_keys();
-
-    let mut protocol: Option<Protocol> = None;
-
-    let rng = SystemRandom::new();
-    let scid = gen_scid(&rng);
-
-    info!(
-        "connecting to {:} from {:} with scid {:?}",
-        peer_addrs[0], local_addr, scid
-    );
-
-    // Create a QUIC connection and initiate handshake.
-    let mut conn = quiche::connect(None, &scid, local_addr, peer_addrs[0], &mut config).unwrap();
-
-    if let Some(keylog) = &mut keylog {
-        if let Ok(keylog) = keylog.try_clone() {
-            conn.set_keylog(Box::new(keylog));
+        // Only bother with qlog if the user specified it.
+        #[cfg(feature = "qlog")]
+        {
+            #![allow(unstable_name_collisions)]
+            let peer_addrs_str = Some(
+                peer_addrs
+                    .iter()
+                    .map(|a| a.to_string())
+                    .intersperse(",".to_string())
+                    .collect(),
+            );
+            common::set_qlog(&mut conn, format!("{:?}", scid), "client", peer_addrs_str);
+            // common::qlog_metadata(&mut conn, &tc, &config);
         }
+
+        Ok(Client {
+            local_addrs: addrs,
+            peer_addrs,
+            scheduler,
+
+            conn: conn,
+            sockets,
+            src_addr_tokens,
+            app_data_start: None,
+            recv_buf: [0; 65535],
+            rng: rng,
+
+            // consider the first path as already probed, as we established the
+            // connection over it.
+            probed_paths: 1,
+
+            poll,
+            events: mio::Events::with_capacity(1024),
+        })
     }
 
-    // Only bother with qlog if the user specified it.
-    #[cfg(feature = "qlog")]
-    {
-        #![allow(unstable_name_collisions)]
-        let peer_addrs_str = Some(
-            peer_addrs
-                .iter()
-                .map(|a| a.to_string())
-                .intersperse(",".to_string())
-                .collect(),
+    pub fn connect(&mut self) -> Result<(), ClientError> {
+        info!(
+            "Connecting to {:} from {:}", // with scid {:?}",
+            self.peer_addrs[0],
+            self.local_addrs[0], // scid
         );
-        common::set_qlog(&mut conn, format!("{:?}", scid), "client", peer_addrs_str);
 
-        common::qlog_metadata(&mut conn, &tc, &config);
+        // Send initial message to server
+        let mut write_buf = [0; MAX_DATAGRAM_SIZE];
+        let (write, send_info) = self.conn.send(&mut write_buf).expect("initial send failed");
+        let token = self.src_addr_tokens[&send_info.from];
+        let socket = &mut self.sockets[token];
+        socket.schedule_send(Some(&write_buf), write, send_info.to);
+        socket.try_send()?;
+
+        trace!(
+            "init write: written {} bytes from {:} to {:}",
+            write,
+            send_info.from,
+            send_info.to
+        );
+
+        self.app_data_start = Some(std::time::Instant::now());
+
+        Ok(())
     }
 
-    // Send initial message to server
-    let mut write_buf = [0; MAX_DATAGRAM_SIZE];
-    let (write, send_info) = conn.send(&mut write_buf).expect("initial send failed");
-    let token = src_addr_tokens[&send_info.from];
-    let socket = &mut sockets[token];
-    socket.schedule_send(Some(&write_buf), write, send_info.to);
-    socket.try_send()?;
-
-    trace!(
-        "init write: written {} bytes from {:} to {:}",
-        write,
-        send_info.from,
-        send_info.to
-    );
-
-    let app_data_start = std::time::Instant::now();
-
-    // consider the first path as already probed, as we established the
-    // connection over it.
-    let mut probed_paths = 1;
-
-    'outer: loop {
+    pub fn poll(
+        &mut self,
+        ui_timeout: Duration,
+        protocol_timeout: Duration,
+    ) -> Result<(), ClientError> {
         let mut is_conn_timeout = false;
         let mut timeout_duration = Duration::ZERO;
-        if !conn.is_in_early_data() || protocol.is_some() {
-            let conn_timeout = conn.timeout().unwrap_or(Duration::ZERO);
-            let ui_timeout = ui.timeout();
-            let protocol_timeout = if let Some(protocol) = protocol.as_ref() {
-                protocol.timeout()
-            } else {
-                Duration::MAX
-            };
+        // if !self.conn.is_in_early_data() || self.protocol.is_some() {
+        if !self.conn.is_in_early_data() || protocol_timeout < Duration::MAX {
+            let conn_timeout = self.conn.timeout().unwrap_or(Duration::ZERO);
             let timeout = std::cmp::min(std::cmp::min(conn_timeout, ui_timeout), protocol_timeout);
             is_conn_timeout = conn_timeout == timeout;
             let poll_wait = Instant::now();
-            log::trace!(
-                "poll_timeout={:?}: conn={:?}, ui={:?}, protocol={:?}",
-                timeout,
-                conn_timeout,
-                ui_timeout,
-                protocol_timeout,
-            );
-            if let Err(e) = poll.poll(&mut events, Some(timeout)) {
+            if let Err(e) = self.poll.poll(&mut self.events, Some(timeout)) {
                 if e.kind() != std::io::ErrorKind::Interrupted {
-                    error!("Poll returned error: {}", e);
-                    break;
+                    return Err(ClientError::Other(format!("Poll returned error: {}", e)));
                 }
             }
             timeout_duration = poll_wait.elapsed();
             log::trace!(
-                "poll duration was {:?} events_empty={}",
-                timeout_duration,
-                events.is_empty()
+                "timeout (ms) {}, slept {}, events_empty={}: conn={}, ui={}, protocol={}",
+                timeout.as_millis(),
+                timeout_duration.as_millis(),
+                self.events.is_empty(),
+                conn_timeout.as_millis(),
+                ui_timeout.as_millis(),
+                protocol_timeout.as_millis(),
             );
         }
 
-        if protocol.is_some() {
-            ui.update(&conn).ok();
-        }
-
-        // If the event loop reported no events, it means that the timeout
-        // has expired, so handle it without attempting to read packets. We
-        // will then proceed with the send loop.
-        if events.is_empty() && is_conn_timeout {
+        // If the event loop reported no events, it means that the timeout has expired
+        if self.events.is_empty() && is_conn_timeout {
             trace!("timed out after {:?}", timeout_duration);
-            conn.on_timeout();
+            self.conn.on_timeout();
         }
 
-        // Read incoming UDP packets from the socket and feed them to quiche,
-        // until there are no more packets to read.
-        for event in &events {
+        Ok(())
+    }
+
+    // Read incoming UDP packets from the socket and feed them to quiche,
+    // until there are no more packets to read.
+    pub fn read(&mut self) -> Result<(), ClientError> {
+        for event in &self.events {
             let token = event.token().into();
-            let socket = &mut sockets[token];
+            let socket = &mut self.sockets[token];
 
             if event.is_writable() && socket.send_pending() {
                 socket.try_send()?;
@@ -283,7 +303,7 @@ pub fn connect(
             if event.is_readable() {
                 let local_addr = socket.socket.local_addr().unwrap();
                 'read: loop {
-                    let (len, from) = match socket.socket.recv_from(&mut recv_buf) {
+                    let (len, from) = match socket.socket.recv_from(&mut self.recv_buf) {
                         Ok(v) => v,
 
                         Err(e) => {
@@ -294,7 +314,7 @@ pub fn connect(
                                 break 'read;
                             }
 
-                            return Err(ClientError::Other(format!(
+                            return Err(ClientError::IOFail(format!(
                                 "{}: recv() failed: {:?}",
                                 local_addr, e
                             )));
@@ -309,7 +329,7 @@ pub fn connect(
                     };
 
                     // Process potentially coalesced packets.
-                    let read = match conn.recv(&mut recv_buf[..len], recv_info) {
+                    let read = match self.conn.recv(&mut self.recv_buf[..len], recv_info) {
                         Ok(v) => v,
 
                         Err(e) => {
@@ -323,77 +343,80 @@ pub fn connect(
             }
         }
 
-        // trace!("done reading");
+        Ok(())
+    }
 
-        if terminate.load(Ordering::SeqCst) {
-            if let Ok(()) = conn.close(true, 0x1, b"user terminated") {
-                info!("Termination signal received, closing connection");
-            }
-        }
-
-        // Skip draining on the client
-        // if conn.is_draining() || conn.is_closed() {
-        if conn.is_closed() {
-            break 'outer;
-        }
-
-        // Create a new application protocol session once the QUIC connection is
-        // established.
-        if (conn.is_established() || conn.is_in_early_data()) && protocol.is_none() {
-            let app_proto = conn.application_proto();
-
-            if QUICHEPERF_ALPN.contains(&app_proto) {
-                info!("Connection established. Selecting QUICHEPERF protocol.");
-                protocol = Some(Protocol::new());
-            } else {
-                warn!("No ALPN matched");
-            }
-        }
-
-        if let Some(protocol) = protocol.as_mut() {
-            if !conn.is_closed() && !conn.is_draining() && !protocol.close_after_duration(&mut conn)
-            {
-                if !protocol.config_sent {
-                    protocol.send_config(&mut conn, &tc).ok();
-                } else if !protocol.config_acked {
-                    protocol.recv_config_ack(&mut conn, &mut recv_buf).ok();
-                }
-                if protocol.config_acked {
-                    protocol.work(&mut conn, &mut recv_buf).ok();
-                }
-            }
-        }
-
-        client_handle_path_events(&mut conn);
-
-        psu.check(&mut conn);
-
+    pub fn handle_cids(&mut self) {
         // See whether source Connection IDs have been retired.
-        while let Some(retired_scid) = conn.retired_scid_next() {
+        while let Some(retired_scid) = self.conn.retired_scid_next() {
             info!("Retiring source CID {:?}", retired_scid);
         }
 
         // Provides as many CIDs as possible.
-        while conn.source_cids_left() > 0 {
-            let (scid, reset_token) = generate_cid_and_reset_token(&rng);
+        while self.conn.source_cids_left() > 0 {
+            let (scid, reset_token) = generate_cid_and_reset_token(&self.rng);
 
-            if conn.new_source_cid(&scid, reset_token, false).is_err() {
+            if self.conn.new_source_cid(&scid, reset_token, false).is_err() {
                 break;
             }
         }
+    }
 
-        if probed_paths < addrs.len() {
-            trace!("probed_path={}, addrs={:?}", probed_paths, addrs);
-            let local_probe_addr = addrs[probed_paths];
-            let peer_probe_addr = peer_addrs[probed_paths];
-            if conn.available_dcids() > 0 {
-                match conn.probe_path(local_probe_addr, peer_probe_addr) {
+    // Handle path events on client
+    pub fn handle_path_events(&mut self) {
+        while let Some(qe) = self.conn.path_event_next() {
+            match qe {
+                // Only called server-side
+                quiche::PathEvent::New(..) => unreachable!(),
+
+                quiche::PathEvent::Validated(local_addr, peer_addr) => {
+                    info!("Path ({}, {}) is now validated", local_addr, peer_addr);
+                    // if conn_args.multipath {
+                    self.conn.set_active(local_addr, peer_addr, true).ok();
+                }
+
+                quiche::PathEvent::FailedValidation(local_addr, peer_addr) => {
+                    info!("Path ({}, {}) failed validation", local_addr, peer_addr);
+                }
+
+                quiche::PathEvent::Closed(local_addr, peer_addr, e, reason) => {
+                    info!(
+                        "Path ({}, {}) is now closed and unusable; err = {}, reason = {:?}",
+                        local_addr, peer_addr, e, reason
+                    );
+                }
+
+                quiche::PathEvent::ReusedSourceConnectionId(cid_seq, old, new) => {
+                    info!(
+                        "Peer reused cid seq {} (initially {:?}) on {:?}",
+                        cid_seq, old, new
+                    );
+                }
+
+                quiche::PathEvent::PeerMigrated(..) => unreachable!(),
+
+                quiche::PathEvent::PeerPathStatus(..) => {}
+            }
+        }
+    }
+
+    pub fn probe_paths_if_necessary(&mut self) -> Result<(), ClientError> {
+        if self.probed_paths < self.local_addrs.len() {
+            trace!(
+                "probed_path={}, addrs={:?}",
+                self.probed_paths,
+                self.local_addrs
+            );
+            let local_probe_addr = self.local_addrs[self.probed_paths];
+            let peer_probe_addr = self.peer_addrs[self.probed_paths];
+            if self.conn.available_dcids() > 0 {
+                match self.conn.probe_path(local_probe_addr, peer_probe_addr) {
                     Ok(v) => {
                         info!(
                             "{:}->{:} Successfully started probing for path with dcid {}",
                             local_probe_addr, peer_probe_addr, v
                         );
-                        probed_paths += 1;
+                        self.probed_paths += 1;
                     }
                     Err(e) => error!(
                         "{:}->{:} Failed probing path from: {}",
@@ -409,10 +432,14 @@ pub fn connect(
             // }
         }
 
-        // Generate outgoing QUIC packets and send them on the UDP socket.
-        while let Some((local_addr, peer_addr)) = scheduler.get_best_path(&conn) {
-            let token = src_addr_tokens[&local_addr];
-            let socket = &mut sockets[token];
+        Ok(())
+    }
+
+    /// Generate outgoing QUIC packets and send them on the UDP socket.
+    pub fn send(&mut self) -> Result<(), ClientError> {
+        while let Some((local_addr, peer_addr)) = self.scheduler.get_best_path(&self.conn) {
+            let token = self.src_addr_tokens[&local_addr];
+            let socket = &mut self.sockets[token];
             if socket.send_pending() {
                 // The scheduler will probably return this same path over and over again. Break to exit (potential) infinite loop.
                 // In most cases, socket.try_send() would block now. We wait for a writable event.
@@ -421,7 +448,10 @@ pub fn connect(
             }
 
             let (write, send_info) =
-                match conn.send_on_path(&mut socket.buf, Some(local_addr), Some(peer_addr)) {
+                match self
+                    .conn
+                    .send_on_path(&mut socket.buf, Some(local_addr), Some(peer_addr))
+                {
                     Ok(v) => v,
 
                     Err(quiche::Error::Done) => {
@@ -431,7 +461,7 @@ pub fn connect(
                     Err(e) => {
                         error!("{} -> {}: conn.send failed: {:?}", local_addr, peer_addr, e);
 
-                        conn.close(false, 0x1, b"fail").ok();
+                        self.conn.close(false, 0x1, b"fail").ok();
                         break;
                     }
                 };
@@ -440,129 +470,52 @@ pub fn connect(
             socket.try_send()?;
         }
 
-        // let path_stats: Vec<_> = conn
-        //     .path_stats()
-        //     .map(|p| (p.local_addr, p.peer_addr))
-        //     .collect();
-        // Only execute this for multipath
-        // Enabling this leads to error messages on the receiver, looking like:
-        // 74850c9a211749cc8b0a8933ead48b74043d1b1d dropped invalid packet: CryptoFail
-        // if path_stats.len() > 1 {
-        //     for (l, p) in path_stats {
-        //         let token = src_addr_tokens[&local_addr];
-        //         let socket = &mut sockets[token];
-        //         if socket.send_pending() {
-        //             continue;
-        //         }
-
-        //         let (write, send_info) = match conn.send_on_path(&mut write_buf, Some(l), Some(p)) {
-        //             Ok(v) => v,
-        //             Err(quiche::Error::Done) => break,
-        //             Err(_) => {
-        //                 conn.close(false, 0x1, b"fail").ok();
-        //                 break;
-        //             }
-        //         };
-
-        //         socket.schedule_send(None, write, send_info.to);
-        //         socket.try_send()?;
-        //     }
-
-        //     if conn.is_closed() {
-        //         break 'outer;
-        //     }
-        // }
+        Ok(())
     }
 
-    info!(
-        "connection closed, {:?} {:?}",
-        conn.stats(),
-        conn.path_stats().collect::<Vec<quiche::PathStats>>()
-    );
+    pub fn on_close(&mut self) -> Result<(), ClientError> {
+        info!(
+            "connection closed, {:?} {:?}",
+            self.conn.stats(),
+            self.conn.path_stats().collect::<Vec<quiche::PathStats>>()
+        );
 
-    if !conn.is_established() {
-        error!("connection timed out after {:?}", app_data_start.elapsed());
-
-        return Err(ClientError::HandshakeFail);
-    }
-
-    for (local_addr, token) in src_addr_tokens.iter() {
-        let socket = &mut sockets[*token];
-        if socket.would_block_cntr > 0 {
-            let msg = format!(
-                "{}: socket snd buf was full {} times. Consider increasing the send buffer size.",
-                local_addr, socket.would_block_cntr
+        if !self.conn.is_established() {
+            error!(
+                "connection timed out after {:?}",
+                self.app_data_start.unwrap().elapsed()
             );
-            warn!("{}", msg);
-            println!("{}", msg);
+
+            return Err(ClientError::HandshakeFail);
         }
-    }
 
-    if protocol.is_some() {
-        ui.print_summary(&conn).ok();
-    }
-
-    #[cfg(feature = "qlog")]
-    {
-        if !conn.qlog_writer_drained() {
-            println!("Waiting for the qlog event queue to be drained");
-        }
-        conn.await_qlog_writer_drained();
-    }
-
-    Ok(())
-}
-
-// Handle path events on client
-fn client_handle_path_events(conn: &mut quiche::Connection) {
-    while let Some(qe) = conn.path_event_next() {
-        match qe {
-            // Only called server-side
-            quiche::PathEvent::New(..) => unreachable!(),
-
-            quiche::PathEvent::Validated(local_addr, peer_addr) => {
-                info!("Path ({}, {}) is now validated", local_addr, peer_addr);
-                // if conn_args.multipath {
-                conn.set_active(local_addr, peer_addr, true).ok();
-            }
-
-            quiche::PathEvent::FailedValidation(local_addr, peer_addr) => {
-                info!("Path ({}, {}) failed validation", local_addr, peer_addr);
-            }
-
-            quiche::PathEvent::Closed(local_addr, peer_addr, e, reason) => {
-                info!(
-                    "Path ({}, {}) is now closed and unusable; err = {}, reason = {:?}",
-                    local_addr, peer_addr, e, reason
+        for (local_addr, token) in self.src_addr_tokens.iter() {
+            let socket = &mut self.sockets[*token];
+            if socket.would_block_cntr > 0 {
+                let msg = format!(
+                    "{}: socket snd buf was full {} times. Consider increasing the send buffer size.",
+                    local_addr, socket.would_block_cntr
                 );
+                warn!("{}", msg);
+                println!("{}", msg);
             }
-
-            quiche::PathEvent::ReusedSourceConnectionId(cid_seq, old, new) => {
-                info!(
-                    "Peer reused cid seq {} (initially {:?}) on {:?}",
-                    cid_seq, old, new
-                );
-            }
-
-            quiche::PathEvent::PeerMigrated(..) => unreachable!(),
-
-            quiche::PathEvent::PeerPathStatus(..) => {}
         }
+
+        #[cfg(feature = "qlog")]
+        {
+            // if !self.conn.qlog_writer_drained() {
+            //     println!("Waiting for the qlog event queue to be drained");
+            // }
+            self.conn.await_qlog_writer_drained();
+        }
+
+        Ok(())
     }
 }
-
-// fn set_predefined_path_statuses(conn: &mut )
 
 // Generate a random source connection ID for the connection.
 fn gen_scid<T: SecureRandom>(rng: &T) -> quiche::ConnectionId<'static> {
     let mut scid = [0; quiche::MAX_CONN_ID_LEN];
     rng.fill(&mut scid[..]).unwrap();
     quiche::ConnectionId::from_vec(scid.to_vec())
-}
-
-#[derive(Debug)]
-pub enum ClientError {
-    HandshakeFail,
-    // HttpFail,
-    Other(String),
 }

@@ -43,181 +43,14 @@ use std::time::{Duration, Instant};
 
 use crate::protocol::TestConfig;
 use cli::Args;
+use client::{Client, ClientError};
+use common::PathStatusUpdater;
 use git_testament::git_testament_macros;
 
 use clap::Parser;
+use protocol::Protocol;
 use quiche::scheduler;
 use std::net::SocketAddr;
-
-fn main() -> ExitCode {
-    env_logger::builder()
-        .default_format_timestamp_nanos(true)
-        .init();
-
-    // Parse CLI parameters.
-    let args = cli::Args::parse();
-
-    let mut config = match make_quiche_config(&args) {
-        Ok(v) => v,
-        Err(exitcode) => return exitcode,
-    };
-
-    let terminate = Arc::new(AtomicBool::new(false));
-    let t = terminate.clone();
-
-    ctrlc::set_handler(move || {
-        t.store(true, Ordering::SeqCst);
-    })
-    .expect("Error setting Ctrl-C handler");
-
-    let local_addrs: Vec<SocketAddr> = args
-        .local_addrs
-        .iter()
-        .map(|local_addr| {
-            let socket_parse_err = match local_addr.parse::<SocketAddr>() {
-                Ok(v) => return Some(v),
-                Err(e) => e,
-            };
-
-            match common::get_ip_from_ifname(local_addr) {
-                Some(v) => {
-                    info!("{}: use local IP {}", local_addr, v);
-                    Some(v)
-                }
-                None => {
-                    eprintln!(
-                        "Could neither convert {} to IP nor find interface IP address: {}",
-                        local_addr, socket_parse_err
-                    );
-                    None
-                }
-            }
-        })
-        .filter(|v| v.is_some())
-        .map(|v| v.unwrap())
-        .collect();
-
-    match args.commands {
-        cli::Subcommands::Client {
-            peer_addrs,
-            duration,
-            reverse,
-            bitrate: bitrate_target,
-            path_statuses,
-        } => {
-            if args.local_addrs.len() != peer_addrs.len() {
-                eprintln!(
-                "Same number of local and peer addresses expected. One path will be created per pair.\n\
-                local_addrs={:?}, peer_addrs={:?}",
-                args.local_addrs, peer_addrs
-            );
-                return ExitCode::FAILURE;
-            }
-
-            let tc = TestConfig {
-                local_addrs: local_addrs.iter().map(|s| s.to_string()).collect(),
-                peer_addrs: peer_addrs.iter().map(|s| s.to_string()).collect(),
-                password: args.password,
-                client_sending: !reverse,
-                duration: Duration::from_secs(duration),
-                bitrate_target: bitrate_target,
-            };
-
-            let psu = match common::PathStatusUpdater::new(
-                Instant::now(),
-                local_addrs.clone(),
-                peer_addrs.clone(),
-                path_statuses,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("Path status updater: {}", e);
-                    return ExitCode::FAILURE;
-                }
-            };
-
-            let res = match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
-                cli::SchedulerOpts::Blest => client::connect(
-                    local_addrs,
-                    peer_addrs,
-                    tc,
-                    config,
-                    scheduler::Blest::new(),
-                    terminate,
-                    psu,
-                ),
-                cli::SchedulerOpts::MinRTT => client::connect(
-                    local_addrs,
-                    peer_addrs,
-                    tc,
-                    config,
-                    scheduler::MinRTT::new(),
-                    terminate,
-                    psu,
-                ),
-                cli::SchedulerOpts::RoundRobin => client::connect(
-                    local_addrs,
-                    peer_addrs,
-                    tc,
-                    config,
-                    scheduler::RoundRobin::new(),
-                    terminate,
-                    psu,
-                ),
-            };
-
-            return match res {
-                Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
-
-                Err(client::ClientError::Other(e)) => {
-                    eprintln!("{}", e);
-                    ExitCode::FAILURE
-                }
-
-                Ok(_) => ExitCode::SUCCESS,
-            };
-        }
-        cli::Subcommands::Server {
-            cert,
-            key,
-            oneshot: _,
-        } => {
-            if let Err(e) = config.load_cert_chain_from_pem_file(cert.to_str().unwrap()) {
-                eprintln!("Error loading certificate from {:?}: {}", cert, e);
-                return ExitCode::FAILURE;
-            };
-
-            if let Err(e) = config.load_priv_key_from_pem_file(key.to_str().unwrap()) {
-                eprintln!("Error loading private key from {:?}: {}", key, e);
-                return ExitCode::FAILURE;
-            };
-
-            match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
-                cli::SchedulerOpts::Blest => server::listen(
-                    local_addrs,
-                    args.password,
-                    config,
-                    scheduler::Blest::new(),
-                    terminate,
-                ),
-                cli::SchedulerOpts::MinRTT => server::listen(
-                    local_addrs,
-                    args.password,
-                    config,
-                    scheduler::MinRTT::new(),
-                    terminate,
-                ),
-                cli::SchedulerOpts::RoundRobin => server::listen(
-                    local_addrs,
-                    args.password,
-                    config,
-                    scheduler::RoundRobin::new(),
-                    terminate,
-                ),
-            };
-        }
-    }
-}
 
 pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     let mut config = match quiche::Config::new(quiche::PROTOCOL_VERSION) {
@@ -306,4 +139,224 @@ pub const fn version() -> &'static str {
             version_testament!()
         )
     }
+}
+
+fn main() -> ExitCode {
+    env_logger::builder()
+        .default_format_timestamp_nanos(true)
+        .init();
+
+    // Parse CLI parameters.
+    let args = cli::Args::parse();
+
+    let mut config = match make_quiche_config(&args) {
+        Ok(v) => v,
+        Err(exitcode) => return exitcode,
+    };
+
+    let terminate = Arc::new(AtomicBool::new(false));
+    let t = terminate.clone();
+
+    ctrlc::set_handler(move || {
+        info!("SIGINT received");
+        t.store(true, Ordering::SeqCst);
+    })
+    .expect("Error setting Ctrl-C handler");
+
+    let local_addrs: Vec<SocketAddr> = args
+        .local_addrs
+        .iter()
+        .map(|local_addr| {
+            let socket_parse_err = match local_addr.parse::<SocketAddr>() {
+                Ok(v) => return Some(v),
+                Err(e) => e,
+            };
+
+            match common::get_ip_from_ifname(local_addr) {
+                Some(v) => {
+                    info!("{}: use local IP {}", local_addr, v);
+                    Some(v)
+                }
+                None => {
+                    eprintln!(
+                        "Could neither convert {} to IP nor find interface IP address: {}",
+                        local_addr, socket_parse_err
+                    );
+                    None
+                }
+            }
+        })
+        .filter(|v| v.is_some())
+        .map(|v| v.unwrap())
+        .collect();
+
+    match args.commands {
+        cli::Subcommands::Client {
+            peer_addrs,
+            duration,
+            reverse,
+            bitrate: bitrate_target,
+            path_statuses,
+        } => {
+            if args.local_addrs.len() != peer_addrs.len() {
+                eprintln!(
+                "Same number of local and peer addresses expected. One path will be created per pair.\n\
+                local_addrs={:?}, peer_addrs={:?}",
+                args.local_addrs, peer_addrs
+            );
+                return ExitCode::FAILURE;
+            }
+
+            let psu = match common::PathStatusUpdater::new(
+                Instant::now(),
+                local_addrs.clone(),
+                peer_addrs.clone(),
+                path_statuses,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("Path status updater: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            let scheduler: Box<dyn scheduler::MultipathScheduler> =
+                match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
+                    cli::SchedulerOpts::Blest => Box::new(scheduler::Blest::new()),
+                    cli::SchedulerOpts::MinRTT => Box::new(scheduler::MinRTT::new()),
+                    cli::SchedulerOpts::RoundRobin => Box::new(scheduler::RoundRobin::new()),
+                };
+
+            let tc = TestConfig {
+                local_addrs: local_addrs.iter().map(|s| s.to_string()).collect(),
+                peer_addrs: peer_addrs.iter().map(|s| s.to_string()).collect(),
+                password: args.password,
+                client_sending: !reverse,
+                duration: Duration::from_secs(duration),
+                bitrate_target: bitrate_target,
+            };
+
+            let client = client::Client::new(local_addrs, peer_addrs, config, scheduler).unwrap();
+
+            return match quicheperf_client(client, tc, psu, terminate) {
+                Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
+
+                Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
+                    eprintln!("{}", e);
+                    ExitCode::FAILURE
+                }
+
+                Ok(_) => ExitCode::SUCCESS,
+            };
+        }
+        cli::Subcommands::Server {
+            cert,
+            key,
+            oneshot: _,
+        } => {
+            if let Err(e) = config.load_cert_chain_from_pem_file(cert.to_str().unwrap()) {
+                eprintln!("Error loading certificate from {:?}: {}", cert, e);
+                return ExitCode::FAILURE;
+            };
+
+            if let Err(e) = config.load_priv_key_from_pem_file(key.to_str().unwrap()) {
+                eprintln!("Error loading private key from {:?}: {}", key, e);
+                return ExitCode::FAILURE;
+            };
+
+            match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
+                cli::SchedulerOpts::Blest => server::listen(
+                    local_addrs,
+                    args.password,
+                    config,
+                    scheduler::Blest::new(),
+                    terminate,
+                ),
+                cli::SchedulerOpts::MinRTT => server::listen(
+                    local_addrs,
+                    args.password,
+                    config,
+                    scheduler::MinRTT::new(),
+                    terminate,
+                ),
+                cli::SchedulerOpts::RoundRobin => server::listen(
+                    local_addrs,
+                    args.password,
+                    config,
+                    scheduler::RoundRobin::new(),
+                    terminate,
+                ),
+            };
+        }
+    }
+}
+
+fn quicheperf_client(
+    mut client: Client,
+    tc: TestConfig,
+    mut psu: PathStatusUpdater,
+    terminate: Arc<AtomicBool>,
+) -> Result<(), ClientError> {
+    let mut ui = ui::UI::new(tc.client_sending);
+    ui.new_test(&tc).ok();
+
+    let mut protocol: Option<Protocol> = None;
+
+    client.connect()?;
+
+    loop {
+        if terminate.load(Ordering::SeqCst) {
+            client.conn.close(true, 0x1, b"user terminated").ok();
+        }
+
+        if protocol.is_some() {
+            ui.update(&client.conn).ok();
+        }
+
+        let ui_timeout = ui.timeout();
+        let protocol_timeout = if let Some(protocol) = protocol.as_ref() {
+            protocol.timeout()
+        } else {
+            Duration::MAX
+        };
+        client.poll(ui_timeout, protocol_timeout)?;
+
+        client.read()?;
+
+        if client.conn.is_closed() {
+            break;
+        }
+
+        // Create a new application protocol session once the QUIC connection is established.
+        if (client.conn.is_established() || client.conn.is_in_early_data()) && protocol.is_none() {
+            let app_proto = client.conn.application_proto();
+
+            if common::QUICHEPERF_ALPN.contains(&app_proto) {
+                info!("Connection established. Selecting QUICHEPERF protocol.");
+                protocol = Some(protocol::Protocol::new_with_tc(tc.clone()));
+            } else {
+                warn!("No ALPN matched");
+            }
+        }
+
+        psu.check(&mut client.conn);
+
+        client.handle_cids();
+        client.handle_path_events();
+        client.probe_paths_if_necessary()?;
+
+        if let Some(protocol) = protocol.as_mut() {
+            protocol.dispatch(&mut client.conn);
+        }
+
+        client.send()?;
+    }
+
+    client.on_close()?;
+
+    if protocol.is_some() {
+        ui.print_summary(&client.conn).ok();
+    }
+
+    Ok(())
 }

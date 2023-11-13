@@ -40,6 +40,8 @@ pub struct Protocol {
 
     // Point in time when data was last sent
     last_send: Option<Instant>,
+
+    buf: [u8; 65535],
 }
 
 impl Protocol {
@@ -51,6 +53,19 @@ impl Protocol {
             start: None,
             finished: false,
             last_send: None,
+            buf: [0; 65535],
+        }
+    }
+
+    pub fn new_with_tc(tc: TestConfig) -> Self {
+        Self {
+            config_sent: false,
+            config_acked: false,
+            tc: Some(tc),
+            start: None,
+            finished: false,
+            last_send: None,
+            buf: [0; 65535],
         }
     }
 
@@ -71,8 +86,23 @@ impl Protocol {
         }
     }
 
-    /// Dispatch to send or receive data based on test direction
-    pub fn work(&mut self, conn: &mut Connection, buf: &mut [u8]) -> quiche::Result<()> {
+    /// Drive the quicheperf test execution forward: Send/receive configurations and
+    /// data depending on the test direction.
+    pub fn dispatch(&mut self, conn: &mut Connection) {
+        if !conn.is_closed() && !conn.is_draining() && !self.close_after_duration(conn) {
+            if !self.config_sent {
+                self.send_config(conn).ok();
+            } else if !self.config_acked {
+                self.recv_config_ack(conn).ok();
+            }
+            if self.config_acked {
+                self.work(conn).ok();
+            }
+        }
+    }
+
+    // TODO: Merge into dispatch
+    pub fn work(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         if !self.config_acked {
             return Err(quiche::Error::Done);
         }
@@ -82,7 +112,7 @@ impl Protocol {
         if send_data {
             self.send_data(conn)
         } else {
-            self.recv_data(conn, buf)
+            self.recv_data(conn)
         }
     }
 
@@ -115,10 +145,15 @@ impl Protocol {
     }
 
     /// Called by client to kick off test
-    pub fn send_config(&mut self, conn: &mut Connection, tc: &TestConfig) -> quiche::Result<()> {
+    pub fn send_config(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         trace!("Trying to send test configuration request");
 
-        let msg = serde_json::to_string(&tc).unwrap();
+        let tc = match self.tc.as_ref() {
+            Some(v) => v,
+            None => unreachable!(),
+        };
+
+        let msg = serde_json::to_string(tc).unwrap();
         let written = match conn.stream_send(0, msg.as_bytes(), false) {
             Ok(v) => v,
 
@@ -145,8 +180,8 @@ impl Protocol {
     }
 
     // Called by client after sending TestConfig
-    pub fn recv_config_ack(&mut self, conn: &mut Connection, buf: &mut [u8]) -> quiche::Result<()> {
-        while let Ok((read, _fin)) = conn.stream_recv(0, buf) {
+    pub fn recv_config_ack(&mut self, conn: &mut Connection) -> quiche::Result<()> {
+        while let Ok((read, _fin)) = conn.stream_recv(0, &mut self.buf) {
             trace!(
                 "recv_config_ack: {} received {} bytes from stream {}",
                 conn.trace_id(),
@@ -154,7 +189,7 @@ impl Protocol {
                 0
             );
 
-            let tca: TestConfigAck = match serde_json::from_slice(&buf[..read]) {
+            let tca: TestConfigAck = match serde_json::from_slice(&self.buf[..read]) {
                 Ok(tca) => tca,
                 Err(e) => {
                     error!("recv_config_ack: Serde error: {}", e);
@@ -222,9 +257,9 @@ impl Protocol {
         Ok(())
     }
 
-    pub fn recv_data(&mut self, conn: &mut Connection, buf: &mut [u8]) -> quiche::Result<()> {
+    pub fn recv_data(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         trace!("receiving data");
-        while let Ok((read, fin)) = conn.stream_recv(0, buf) {
+        while let Ok((read, fin)) = conn.stream_recv(0, &mut self.buf) {
             trace!(
                 "{} received {} bytes from stream {}, fin={}",
                 conn.trace_id(),
@@ -233,7 +268,7 @@ impl Protocol {
                 fin
             );
 
-            let _stream_buf = &buf[..read];
+            let _stream_buf = &self.buf[..read];
 
             // Drop received data
         }

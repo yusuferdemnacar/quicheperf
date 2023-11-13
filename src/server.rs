@@ -445,7 +445,7 @@ pub fn listen(
                             common::qlog_metadata(&mut client.conn, tc, &config);
                         }
                     } else {
-                        protocol.work(&mut client.conn, &mut buf).ok();
+                        protocol.work(&mut client.conn).ok();
                     }
                 }
 

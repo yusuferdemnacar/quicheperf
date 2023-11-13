@@ -318,7 +318,7 @@ impl PathStatusUpdater {
     ) -> Result<PathStatusUpdater, String> {
         for (_d, pid, _status) in updates.iter() {
             if *pid >= local_addrs.len() {
-                return Err(format!("Path with {pid} does not exist"))
+                return Err(format!("Path with {pid} does not exist"));
             }
         }
         let psu = PathStatusUpdater {
@@ -327,7 +327,7 @@ impl PathStatusUpdater {
             peer_addrs,
             updates,
         };
-        
+
         Ok(psu)
     }
 
