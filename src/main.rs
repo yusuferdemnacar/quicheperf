@@ -39,7 +39,7 @@ mod ui;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::protocol::TestConfig;
 use cli::Args;
@@ -103,6 +103,7 @@ fn main() -> ExitCode {
             duration,
             reverse,
             bitrate: bitrate_target,
+            path_statuses,
         } => {
             if args.local_addrs.len() != peer_addrs.len() {
                 eprintln!(
@@ -122,6 +123,19 @@ fn main() -> ExitCode {
                 bitrate_target: bitrate_target,
             };
 
+            let psu = match common::PathStatusUpdater::new(
+                Instant::now(),
+                local_addrs.clone(),
+                peer_addrs.clone(),
+                path_statuses,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("Path status updater: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+
             let res = match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
                 cli::SchedulerOpts::Blest => client::connect(
                     local_addrs,
@@ -130,6 +144,7 @@ fn main() -> ExitCode {
                     config,
                     scheduler::Blest::new(),
                     terminate,
+                    psu,
                 ),
                 cli::SchedulerOpts::MinRTT => client::connect(
                     local_addrs,
@@ -138,6 +153,7 @@ fn main() -> ExitCode {
                     config,
                     scheduler::MinRTT::new(),
                     terminate,
+                    psu,
                 ),
                 cli::SchedulerOpts::RoundRobin => client::connect(
                     local_addrs,
@@ -146,6 +162,7 @@ fn main() -> ExitCode {
                     config,
                     scheduler::RoundRobin::new(),
                     terminate,
+                    psu,
                 ),
             };
 

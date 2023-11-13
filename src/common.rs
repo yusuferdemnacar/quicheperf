@@ -1,3 +1,4 @@
+use quiche::PathStatus;
 use ring::rand::SecureRandom;
 use serde::Deserialize;
 use serde::Serialize;
@@ -6,6 +7,7 @@ use std::io;
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Instant;
 use synchronized_writer::SynchronizedWriter;
 use zstd::stream::Encoder;
 
@@ -299,3 +301,50 @@ pub fn lowest_latency_scheduler(
         .sorted_by_key(|p| p.rtt)
         .map(|p| (p.local_addr, p.peer_addr))
 } */
+
+pub struct PathStatusUpdater {
+    start: Instant,
+    local_addrs: Vec<SocketAddr>,
+    peer_addrs: Vec<SocketAddr>,
+    updates: Vec<(std::time::Duration, usize, PathStatus)>,
+}
+
+impl PathStatusUpdater {
+    pub fn new(
+        start: Instant,
+        local_addrs: Vec<SocketAddr>,
+        peer_addrs: Vec<SocketAddr>,
+        updates: Vec<(std::time::Duration, usize, PathStatus)>,
+    ) -> Result<PathStatusUpdater, String> {
+        for (_d, pid, _status) in updates.iter() {
+            if *pid >= local_addrs.len() {
+                return Err(format!("Path with {pid} does not exist"))
+            }
+        }
+        let psu = PathStatusUpdater {
+            start,
+            local_addrs,
+            peer_addrs,
+            updates,
+        };
+        
+        Ok(psu)
+    }
+
+    pub fn check(&mut self, conn: &mut quiche::Connection) {
+        let elapsed = self.start.elapsed();
+        let local_addrs = &self.local_addrs;
+        let peer_addrs = &self.peer_addrs;
+        self.updates.retain(|(d, pid, status)| {
+            if elapsed >= *d {
+                let local_addr = local_addrs[*pid];
+                let peer_addr = peer_addrs[*pid];
+                info!("Advertising path status {status:?} from {local_addr} to {peer_addr}");
+                conn.set_path_status(local_addr, peer_addr, *status, true)
+                    .is_err()
+            } else {
+                true
+            }
+        });
+    }
+}

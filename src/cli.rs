@@ -1,4 +1,5 @@
 use parse_size::parse_size;
+use quiche::PathStatus;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
@@ -36,6 +37,27 @@ fn resolve_addr(s: &str) -> Result<SocketAddr, String> {
         Ok(mut it) => it.next().ok_or(format!("failed to resolve {}", s)),
         Err(e) => Err(format!("failed to resolve {}: {}", s, e)),
     }
+}
+
+fn parse_path_status(s: &str) -> Result<(std::time::Duration, usize, PathStatus), String> {
+    let s = s.split(',').collect::<Vec<_>>();
+    if s.len() != 3 {
+        return Err("Failed to split status into three parts".into());
+    }
+    let secs = match s[0].parse::<u64>() {
+        Ok(s) => s,
+        Err(_) => return Err("Failed to parse seconds".into()),
+    };
+    let pid = match s[1].parse::<usize>() {
+        Ok(v) => v,
+        Err(_) => return Err("Failed to path path id".into()),
+    };
+    let status = match s[2].parse::<u64>() {
+        Ok(v) => v,
+        Err(e) => return Err(format!("Failed to parse status integer: {}", e)),
+    };
+    let status = PathStatus::from(status);
+    Ok((std::time::Duration::from_secs(secs), pid, status))
 }
 
 #[derive(Parser, Debug)]
@@ -120,6 +142,13 @@ pub enum Subcommands {
         /// Send data at the specified bitrate (can contain unit, e.g., 1MB, 1MiB, etc.)
         #[arg(short, long, value_parser=parse_bitrate)]
         bitrate: Option<u64>,
+
+        /// Set the multipath status of a path: (after sec, path id, status as uint)
+        /// 1 => Standby
+        /// 2 => Available
+        /// 7 => Broken
+        #[arg(long = "status", value_parser=parse_path_status)]
+        path_statuses: Vec<(std::time::Duration, usize, PathStatus)>,
     },
     /// Run quicheperf server
     Server {

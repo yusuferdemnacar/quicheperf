@@ -104,6 +104,7 @@ pub fn connect(
     mut config: quiche::Config,
     mut scheduler: impl MultipathScheduler,
     terminate: Arc<AtomicBool>,
+    mut psu: PathStatusUpdater,
 ) -> Result<(), ClientError> {
     let mut recv_buf = [0; 65535];
 
@@ -365,6 +366,8 @@ pub fn connect(
 
         client_handle_path_events(&mut conn);
 
+        psu.check(&mut conn);
+
         // See whether source Connection IDs have been retired.
         while let Some(retired_scid) = conn.retired_scid_next() {
             info!("Retiring source CID {:?}", retired_scid);
@@ -514,6 +517,7 @@ pub fn connect(
 fn client_handle_path_events(conn: &mut quiche::Connection) {
     while let Some(qe) = conn.path_event_next() {
         match qe {
+            // Only called server-side
             quiche::PathEvent::New(..) => unreachable!(),
 
             quiche::PathEvent::Validated(local_addr, peer_addr) => {
@@ -546,6 +550,8 @@ fn client_handle_path_events(conn: &mut quiche::Connection) {
         }
     }
 }
+
+// fn set_predefined_path_statuses(conn: &mut )
 
 // Generate a random source connection ID for the connection.
 fn gen_scid<T: SecureRandom>(rng: &T) -> quiche::ConnectionId<'static> {
