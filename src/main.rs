@@ -50,6 +50,7 @@ use git_testament::git_testament_macros;
 use clap::Parser;
 use protocol::Protocol;
 use quiche::scheduler;
+use server::Server;
 use std::net::SocketAddr;
 
 pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
@@ -190,6 +191,13 @@ fn main() -> ExitCode {
         .map(|v| v.unwrap())
         .collect();
 
+    let scheduler: Box<dyn scheduler::MultipathScheduler> =
+        match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
+            cli::SchedulerOpts::Blest => Box::new(scheduler::Blest::new()),
+            cli::SchedulerOpts::MinRTT => Box::new(scheduler::MinRTT::new()),
+            cli::SchedulerOpts::RoundRobin => Box::new(scheduler::RoundRobin::new()),
+        };
+
     match args.commands {
         cli::Subcommands::Client {
             peer_addrs,
@@ -219,13 +227,6 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-
-            let scheduler: Box<dyn scheduler::MultipathScheduler> =
-                match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
-                    cli::SchedulerOpts::Blest => Box::new(scheduler::Blest::new()),
-                    cli::SchedulerOpts::MinRTT => Box::new(scheduler::MinRTT::new()),
-                    cli::SchedulerOpts::RoundRobin => Box::new(scheduler::RoundRobin::new()),
-                };
 
             let tc = TestConfig {
                 local_addrs: local_addrs.iter().map(|s| s.to_string()).collect(),
@@ -264,28 +265,24 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
 
-            match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
-                cli::SchedulerOpts::Blest => server::listen(
-                    local_addrs,
-                    args.password,
-                    config,
-                    scheduler::Blest::new(),
-                    terminate,
-                ),
-                cli::SchedulerOpts::MinRTT => server::listen(
-                    local_addrs,
-                    args.password,
-                    config,
-                    scheduler::MinRTT::new(),
-                    terminate,
-                ),
-                cli::SchedulerOpts::RoundRobin => server::listen(
-                    local_addrs,
-                    args.password,
-                    config,
-                    scheduler::RoundRobin::new(),
-                    terminate,
-                ),
+            let server = match server::Server::new(local_addrs, args.password, config, scheduler) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("Failed to set up server: {:?}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            return match quicheperf_server(server, terminate) {
+                Ok(_) => ExitCode::SUCCESS,
+                Err(server::ServerError::FatalSocket(e)) => {
+                    eprintln!("Fatal: {}", e);
+                    ExitCode::FAILURE
+                }
+                Err(server::ServerError::Unexpected(e)) => {
+                    eprintln!("Unexpected: {}", e);
+                    ExitCode::FAILURE
+                }
             };
         }
     }
@@ -346,7 +343,7 @@ fn quicheperf_client(
         client.probe_paths_if_necessary()?;
 
         if let Some(protocol) = protocol.as_mut() {
-            protocol.dispatch(&mut client.conn);
+            protocol.client_dispatch(&mut client.conn);
         }
 
         client.send()?;
@@ -359,4 +356,45 @@ fn quicheperf_client(
     }
 
     Ok(())
+}
+
+fn quicheperf_server(
+    mut server: Server,
+    terminate: Arc<AtomicBool>,
+) -> Result<(), server::ServerError> {
+    let mut events = mio::Events::with_capacity(1024);
+
+    loop {
+        if terminate.load(Ordering::SeqCst) {
+            info!("Termination signal received, closing connection");
+            for c in server.clients.values_mut().into_iter() {
+                c.conn.close(true, 0x1, b"user terminated").ok();
+            }
+            // TODO: Send out connection close messages and wait for a few seconds
+            return Ok(());
+        }
+
+        server.poll(&mut events)?;
+
+        for event in events.iter() {
+            let token = event.token().into();
+            if event.is_writable() {
+                server.writable(token)?;
+            }
+            if let Err(e) = server.readable(token) {
+                match e {
+                    server::ServerError::FatalSocket(e) => {
+                        error!("{}", e);
+                        break;
+                    }
+                    server::ServerError::Unexpected(e) => {
+                        trace!("{}", e);
+                        continue;
+                    }
+                }
+            }
+        }
+        server.send()?;
+        server.garbage_collect();
+    }
 }

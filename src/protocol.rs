@@ -33,6 +33,7 @@ pub struct Protocol {
     pub config_sent: bool,
     pub config_acked: bool,
     pub tc: Option<TestConfig>,
+    password: Option<String>,
     start: Option<Instant>,
 
     // Set after test duration expired
@@ -45,11 +46,14 @@ pub struct Protocol {
 }
 
 impl Protocol {
-    pub fn new() -> Self {
+    /// Used by the client.
+    pub fn new_with_tc(tc: TestConfig) -> Self {
+        let password = tc.password.clone();
         Self {
             config_sent: false,
             config_acked: false,
-            tc: None,
+            tc: Some(tc),
+            password,
             start: None,
             finished: false,
             last_send: None,
@@ -57,11 +61,13 @@ impl Protocol {
         }
     }
 
-    pub fn new_with_tc(tc: TestConfig) -> Self {
+    /// Used by the server.
+    pub fn new_with_password(password: Option<String>) -> Self {
         Self {
             config_sent: false,
             config_acked: false,
-            tc: Some(tc),
+            tc: None,
+            password,
             start: None,
             finished: false,
             last_send: None,
@@ -86,9 +92,9 @@ impl Protocol {
         }
     }
 
-    /// Drive the quicheperf test execution forward: Send/receive configurations and
+    /// Drive the quicheperf client test execution forward: Send/receive configurations and
     /// data depending on the test direction.
-    pub fn dispatch(&mut self, conn: &mut Connection) {
+    pub fn client_dispatch(&mut self, conn: &mut Connection) {
         if !conn.is_closed() && !conn.is_draining() && !self.close_after_duration(conn) {
             if !self.config_sent {
                 self.send_config(conn).ok();
@@ -98,6 +104,19 @@ impl Protocol {
             if self.config_acked {
                 self.work(conn).ok();
             }
+        }
+    }
+
+    /// Drive the quicheperf server test execution forward.
+    pub fn server_dispatch(&mut self, conn: &mut Connection) {
+        if !self.config_acked {
+            self.recv_config(conn).ok();
+            // #[cfg(feature = "qlog")]
+            // if let Some(tc) = &protocol.tc {
+            //     common::qlog_metadata(&mut self.conn, tc, &self.config);
+            // }
+        } else {
+            self.work(conn).ok();
         }
     }
 
@@ -275,17 +294,12 @@ impl Protocol {
         Ok(())
     }
 
-    pub fn recv_config(
-        &mut self,
-        conn: &mut Connection,
-        buf: &mut [u8],
-        password: &Option<String>,
-    ) -> quiche::Result<()> {
+    pub fn recv_config(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         debug!("receiving test config");
         let s = 0;
-        match conn.stream_recv(s, buf) {
+        match conn.stream_recv(s, &mut self.buf) {
             Ok((read, _fin)) => {
-                let tc: TestConfig = match serde_json::from_slice(&buf[..read]) {
+                let tc: TestConfig = match serde_json::from_slice(&self.buf[..read]) {
                     Ok(tc) => tc,
                     Err(e) => {
                         error!("Serde test config error: {}", e);
@@ -308,7 +322,7 @@ impl Protocol {
                     }
                 }
 
-                if !pw_eq(password, &tc.password) {
+                if !pw_eq(&self.password, &tc.password) {
                     info!("Authentication failed, closing connection");
                     match conn.close(true, 0x10, b"authentication failed") {
                         Ok(_) | Err(quiche::Error::Done) => return Ok(()),

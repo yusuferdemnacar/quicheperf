@@ -250,21 +250,21 @@ pub fn set_qlog(
     }
 }
 
-pub fn qlog_metadata(conn: &mut quiche::Connection, tc: &TestConfig, config: &quiche::Config) {
-    let metadata = TestMetadata {
-        test_config: tc.clone(),
-        cc_algorithm: config.get_cc_algorithm_name(),
-        version: super::version().into(),
-    };
-    let metadata_str = serde_json::to_string(&metadata).unwrap();
-    conn.add_qlog_event(qlog::events::Event::with_time(
-        0.0,
-        qlog::events::EventData::Message {
-            message: metadata_str,
-        },
-    ));
-    info!("{:?}", metadata);
-}
+// pub fn qlog_metadata(conn: &mut quiche::Connection, tc: &TestConfig, config: &quiche::Config) {
+//     let metadata = TestMetadata {
+//         test_config: tc.clone(),
+//         cc_algorithm: config.get_cc_algorithm_name(),
+//         version: super::version().into(),
+//     };
+//     let metadata_str = serde_json::to_string(&metadata).unwrap();
+//     conn.add_qlog_event(qlog::events::Event::with_time(
+//         0.0,
+//         qlog::events::EventData::Message {
+//             message: metadata_str,
+//         },
+//     ));
+//     info!("{:?}", metadata);
+// }
 
 /// Generate a new pair of Source Connection ID and reset token.
 pub fn generate_cid_and_reset_token<T: SecureRandom>(
