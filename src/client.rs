@@ -101,7 +101,6 @@ impl SocketState {
 pub struct Client {
     local_addrs: Vec<SocketAddr>,
     peer_addrs: Vec<SocketAddr>,
-    scheduler: Box<dyn MultipathScheduler>,
 
     pub conn: quiche::Connection,
     sockets: Slab<SocketState>,
@@ -120,7 +119,6 @@ impl Client {
         local_addrs: Vec<SocketAddr>,
         peer_addrs: Vec<SocketAddr>,
         mut config: quiche::Config,
-        scheduler: Box<dyn MultipathScheduler>,
     ) -> Result<Client, ClientError> {
         let mut sockets = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
         let mut src_addr_tokens = HashMap::new();
@@ -205,7 +203,6 @@ impl Client {
         Ok(Client {
             local_addrs: addrs,
             peer_addrs,
-            scheduler,
 
             conn: conn,
             sockets,
@@ -436,8 +433,8 @@ impl Client {
     }
 
     /// Generate outgoing QUIC packets and send them on the UDP socket.
-    pub fn send(&mut self) -> Result<(), ClientError> {
-        while let Some((local_addr, peer_addr)) = self.scheduler.get_best_path(&self.conn) {
+    pub fn send(&mut self, scheduler: &mut Box<dyn MultipathScheduler>) -> Result<(), ClientError> {
+        while let Some((local_addr, peer_addr)) = scheduler.get_best_path(&mut self.conn) {
             let token = self.src_addr_tokens[&local_addr];
             let socket = &mut self.sockets[token];
             if socket.send_pending() {

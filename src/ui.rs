@@ -6,6 +6,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use itertools::Itertools;
+use quiche::scheduler::{MultipathScheduler, SchedulingDecisions};
 
 use crate::protocol::TestConfig;
 
@@ -116,12 +117,17 @@ impl UI {
     }
 
     /// Called during the test and determines if an per-second update line should be printed.
-    pub fn update(&mut self, conn: &quiche::Connection) -> Result<()> {
+    pub fn update(
+        &mut self,
+        conn: &quiche::Connection,
+        scheduler: &mut Box<dyn MultipathScheduler>,
+    ) -> Result<()> {
         let update_due = self.last_update.map_or(true, |v| v.elapsed() > UPDATE_FREQ);
         if !update_due || conn.is_closed() {
             return Ok(());
         }
-        self.print_per_second_update(conn)?;
+        let scheduled = scheduler.pop_scheduling_decisions();
+        self.print_per_second_update(conn, scheduled)?;
 
         if conn.is_draining() && !self.draining_line_printed {
             writeln!(io::stdout(), "Connection is draining ...")?;
@@ -133,7 +139,11 @@ impl UI {
         Ok(())
     }
 
-    fn print_per_second_update(&mut self, conn: &quiche::Connection) -> Result<()> {
+    fn print_per_second_update(
+        &mut self,
+        conn: &quiche::Connection,
+        scheduled: SchedulingDecisions,
+    ) -> Result<()> {
         let npaths = conn.path_stats().count();
         if self.last_update.is_none() || self.paths.len() < npaths {
             if npaths < 2 {
@@ -149,7 +159,10 @@ impl UI {
             } else {
                 let mut pstr = String::new();
                 for i in 0..npaths {
-                    pstr.push_str(&format!("| P{}  Mbps   | P{} Lost/Total (sp) ", i, i));
+                    pstr.push_str(&format!(
+                        "‖ P{} Mbps, cwnd | P{} Lost/Sched/Total (sp) ",
+                        i, i
+                    ));
                 }
 
                 writeln!(
@@ -182,7 +195,7 @@ impl UI {
             packets_recv
         };
 
-        for (_i, pstats) in conn.path_stats().enumerate() {
+        for (i, pstats) in conn.path_stats().enumerate() {
             let key = FourTuple {
                 local_addr: pstats.local_addr,
                 peer_addr: pstats.peer_addr,
@@ -201,6 +214,10 @@ impl UI {
                 (pstats.recv_bytes - pstats_prev.recv_bytes) as f32 * 8.0 / 1e6
             };
 
+            let (pcwndav_value, pcwndav_unit) = fmt_unit(pstats.cwnd_available as u64);
+            // If PTO loss probes are sent, cwnd_available == max value.
+            let pcwndav_value = std::cmp::min(pcwndav_value, 999);
+
             let packets_sent = pstats.sent - pstats_prev.sent;
             let packets_recv = pstats.recv - pstats_prev.recv;
             let packets = if self.client_sending {
@@ -212,9 +229,11 @@ impl UI {
             let plost = pstats.lost - pstats_prev.lost;
             let plost_spurious = pstats.lost_spurious - pstats_prev.lost_spurious;
 
+            let pscheduled = if i < scheduled.len() { scheduled[i] } else { 0 };
+
             pstr.push_str(&format!(
-                "| {:>10.2} | {:>5} /{:>6} ({:>2}) ",
-                ptput, plost, packets, plost_spurious
+                "‖ {:>7.2}, {:>3}{} | {:>5} /{:>5}/{:>6} ({:>2}) ",
+                ptput, pcwndav_value, pcwndav_unit, plost, pscheduled, packets, plost_spurious
             ));
 
             pstats_prev.sent_bytes = pstats.sent_bytes;
@@ -226,13 +245,7 @@ impl UI {
         }
 
         let stream_0_capacity = conn.stream_stats(0).map_or(0, |s| s.send_capacity);
-        let (fc_value, fc_unit) = if stream_0_capacity >= 1_000_000 {
-            (stream_0_capacity / (1e6 as u64), "M")
-        } else if stream_0_capacity >= 1_000 {
-            (stream_0_capacity / (1e3 as u64), "K")
-        } else {
-            (stream_0_capacity, " ")
-        };
+        let (fc_value, fc_unit) = fmt_unit(stream_0_capacity);
 
         let time = chrono::Local::now().format("%M:%S");
         let elapsed = self.start.elapsed().as_secs();
@@ -315,5 +328,15 @@ impl UI {
         }
 
         Ok(())
+    }
+}
+
+fn fmt_unit(v: u64) -> (u64, &'static str) {
+    if v >= 1_000_000 {
+        (v / (1e6 as u64), "M")
+    } else if v >= 1_000 {
+        (v / (1e3 as u64), "K")
+    } else {
+        (v, " ")
     }
 }

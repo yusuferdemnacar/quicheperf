@@ -49,7 +49,7 @@ use git_testament::git_testament_macros;
 
 use clap::Parser;
 use protocol::Protocol;
-use quiche::scheduler;
+use quiche::scheduler::{self, MultipathScheduler};
 use server::Server;
 use std::net::SocketAddr;
 
@@ -237,9 +237,9 @@ fn main() -> ExitCode {
                 bitrate_target: bitrate_target,
             };
 
-            let client = client::Client::new(local_addrs, peer_addrs, config, scheduler).unwrap();
+            let client = client::Client::new(local_addrs, peer_addrs, config).unwrap();
 
-            return match quicheperf_client(client, tc, psu, terminate) {
+            return match quicheperf_client(client, scheduler, tc, psu, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
@@ -290,6 +290,7 @@ fn main() -> ExitCode {
 
 fn quicheperf_client(
     mut client: Client,
+    mut scheduler: Box<dyn MultipathScheduler>,
     tc: TestConfig,
     mut psu: PathStatusUpdater,
     terminate: Arc<AtomicBool>,
@@ -307,7 +308,7 @@ fn quicheperf_client(
         }
 
         if protocol.is_some() {
-            ui.update(&client.conn).ok();
+            ui.update(&client.conn, &mut scheduler).ok();
         }
 
         let ui_timeout = ui.timeout();
@@ -346,7 +347,7 @@ fn quicheperf_client(
             protocol.client_dispatch(&mut client.conn);
         }
 
-        client.send()?;
+        client.send(&mut scheduler)?;
     }
 
     client.on_close()?;

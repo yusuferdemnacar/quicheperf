@@ -612,7 +612,8 @@ impl Server {
                 / client.max_datagram_size
                 * client.max_datagram_size;
 
-            while let Some((local_addr, peer_addr)) = self.scheduler.get_best_path(&client.conn) {
+            while let Some((local_addr, peer_addr)) = self.scheduler.get_best_path(&mut client.conn)
+            {
                 let token = self.src_addr_tokens[&local_addr];
                 let socket = &mut self.sockets[token];
                 if !socket.writable_for_dest(&peer_addr) {
