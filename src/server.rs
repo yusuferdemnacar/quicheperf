@@ -612,7 +612,8 @@ impl Server {
                 / client.max_datagram_size
                 * client.max_datagram_size;
 
-            while let Some((local_addr, peer_addr)) = self.scheduler.get_best_path(&mut client.conn)
+            while let Some((local_addr, peer_addr, send_instr)) =
+                self.scheduler.get_best_path(&mut client.conn)
             {
                 let token = self.src_addr_tokens[&local_addr];
                 let socket = &mut self.sockets[token];
@@ -628,10 +629,11 @@ impl Server {
                     break;
                 }
 
-                let (write, send_info) = match client.conn.send_on_path(
+                let (written, send_info) = match client.conn.send_on_path_with_instructions(
                     &mut socket.buf[socket.until..max_send_burst],
                     Some(local_addr),
                     Some(peer_addr),
+                    Some(send_instr),
                 ) {
                     Ok(v) => v,
 

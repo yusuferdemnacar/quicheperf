@@ -434,7 +434,9 @@ impl Client {
 
     /// Generate outgoing QUIC packets and send them on the UDP socket.
     pub fn send(&mut self, scheduler: &mut Box<dyn MultipathScheduler>) -> Result<(), ClientError> {
-        while let Some((local_addr, peer_addr)) = scheduler.get_best_path(&mut self.conn) {
+        while let Some((local_addr, peer_addr, send_instr)) =
+            scheduler.get_best_path(&mut self.conn)
+        {
             let token = self.src_addr_tokens[&local_addr];
             let socket = &mut self.sockets[token];
             if socket.send_pending() {
@@ -447,7 +449,7 @@ impl Client {
             let (write, send_info) =
                 match self
                     .conn
-                    .send_on_path(&mut socket.buf, Some(local_addr), Some(peer_addr))
+                    .send_on_path_with_instructions(&mut socket.buf, Some(local_addr), Some(peer_addr), Some(send_instr))
                 {
                     Ok(v) => v,
 
