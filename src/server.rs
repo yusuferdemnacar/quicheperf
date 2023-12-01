@@ -27,6 +27,7 @@ enum PacketRecvAction {
     VersionNegotiation,
 }
 
+/// See `SocketState` in client.rs
 struct SocketState {
     // Constant, set with new()
     socket: mio::net::UdpSocket,
@@ -59,6 +60,11 @@ impl SocketState {
         self.max_datagram_size = 0;
     }
 
+    /// Returns whether a buffer is currently waiting to be written to the socket.
+    fn send_pending(&self) -> bool {
+        self.send_info.is_some()
+    }
+
     fn writable_for_dest(&self, peer_addr: &SocketAddr) -> bool {
         match self.send_info {
             Some(si) => si.to == *peer_addr,
@@ -67,7 +73,7 @@ impl SocketState {
     }
 
     /// Try to send the scheduled buffer, if it exists.
-    /// Returns Ok(0) if the socket returned WouldBlock.
+    /// Returns `Ok(0)` if the socket returned `WouldBlock`.
     fn try_send(&mut self) -> Result<usize, ServerError> {
         let send_info = match self.send_info {
             Some(v) => v,
@@ -89,13 +95,14 @@ impl SocketState {
         ) {
             Ok(n) => {
                 let to = self.send_info.unwrap();
-                trace!("{:}->{:} written {} bytes", to.from, to.to, self.until,);
+                trace!("{:}->{:} written {} bytes", to.from, to.to, self.until);
                 self.reset();
                 Ok(n)
             }
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
                     // TODO: The data of "out" is thrown away, right? Should I handle this?
+                    // Is this assertion correct? It isn't, right?
                     trace!("send() would block");
                     return Ok(0);
                 }
@@ -109,6 +116,7 @@ impl SocketState {
     }
 }
 
+/// Holds state of one QUIC connection.
 pub struct Client {
     pub conn: quiche::Connection,
     client_id: ClientId,
@@ -262,9 +270,6 @@ pub struct Server {
     keylog: Option<std::fs::File>,
 
     poll: mio::Poll,
-    // Indicates if the poll sleep should return immediately so that the write part of
-    // the loop is ran again.
-    continue_write: bool,
 
     rng: SystemRandom,
     conn_id_seed: ring::hmac::Key,
@@ -304,6 +309,7 @@ impl Server {
                 Err(e) => error!("set SO_TXTIME socket option failed {:?}", e),
             };
             enable_gso &= sendto::detect_gso(&socket, MAX_DATAGRAM_SIZE);
+            info!("{} GSO", if enable_gso { "Enable" } else { "Disable" });
 
             #[cfg(target_os = "linux")]
             {
@@ -321,11 +327,13 @@ impl Server {
             let token = sockets.insert(socket_state);
             src_addr_tokens.insert(local_addr, token);
             addrs.push(local_addr);
+
+            // Disabled WRITABLE for now. See client.rs for details on the implications.
             poll.registry()
                 .register(
                     &mut sockets[token].socket,
                     mio::Token(token),
-                    mio::Interest::READABLE.add(mio::Interest::WRITABLE),
+                    mio::Interest::READABLE, // .add(mio::Interest::WRITABLE),
                 )
                 .unwrap();
 
@@ -346,7 +354,6 @@ impl Server {
             keylog: configure_keylog(),
 
             poll,
-            continue_write: false,
 
             conn_id_seed,
             rng,
@@ -362,12 +369,11 @@ impl Server {
     pub fn poll(&mut self, events: &mut mio::Events) -> Result<(), ServerError> {
         // Find the shorter timeout from all the active connections.
         // TODO: use event loop that properly supports timers
-        let timeout = match self.continue_write {
-            true => Some(std::time::Duration::from_secs(0)),
-            false => self.clients.values().filter_map(|c| c.conn.timeout()).min(),
-        };
+        let timeout = self.clients.values().filter_map(|c| c.conn.timeout()).min();
 
-        let poll_wait = std::time::Instant::now();
+        // let send_pending = self.sockets.iter().fold(false, |acc, (_, s)| acc || s.send_pending());
+
+        let poll_start = std::time::Instant::now();
         if let Err(e) = self.poll.poll(events, timeout) {
             if e.kind() != std::io::ErrorKind::Interrupted {
                 return Err(ServerError::Unexpected(format!(
@@ -376,19 +382,31 @@ impl Server {
                 )));
             }
         }
+
+        let poll_duration = poll_start.elapsed();
+        // let (readable, writable) = events.iter().fold(
+        //     (false, false),
+        //     |(readable, writable), e| (readable || e.is_readable(), writable || e.is_writable()));
+
         trace!(
-            "timeout (ms) {:?}, slept {}, events_empty={}, continue_write={}",
+            "timeout {:?}, slept {} ms, ev={} (r={}, w={})",
             timeout,
-            poll_wait.elapsed().as_millis(),
-            events.is_empty(),
-            self.continue_write,
+            poll_duration.as_millis(),
+            !events.is_empty(),
+            "?", // readable,
+            "?", // writable,
         );
 
-        // If the event loop reported no events, it means that the timeout
-        // has expired, so handle it without attempting to read packets. We
-        // will then proceed with the send loop.
-        if events.is_empty() && !self.continue_write {
-            trace!("timed out");
+        let conn_timeout_expired = timeout.map_or(false, |t| {
+            t.saturating_sub(poll_duration) == std::time::Duration::ZERO
+        });
+
+        if events.is_empty() && conn_timeout_expired {
+            trace!(
+                "timed out after {} ms, events_empty={}",
+                poll_duration.as_millis(),
+                events.is_empty()
+            );
             self.clients.values_mut().for_each(|c| c.conn.on_timeout());
         }
 
@@ -396,9 +414,8 @@ impl Server {
     }
 
     /// If a send is pending, this will try sending. If not, nothing is done.
-    pub fn writable(&mut self, token: usize) -> Result<(), ServerError> {
+    pub fn on_writable(&mut self, token: usize) -> Result<(), ServerError> {
         let socket = &mut self.sockets[token];
-        // let local_addr = socket.socket.local_addr().unwrap();
         if let Err(e) = socket.try_send() {
             return Err(ServerError::FatalSocket(format!(
                 "socket.try_send failed: {:?}",
@@ -410,7 +427,7 @@ impl Server {
 
     /// Read incoming UDP packets from the socket and feed them to quiche,
     /// until there are no more packets to read.
-    pub fn readable(&mut self, token: usize) -> Result<(), ServerError> {
+    pub fn on_readable(&mut self, token: usize) -> Result<(), ServerError> {
         // let socket = &self.sockets[token].socket;
         let local_addr = self.sockets[token].socket.local_addr().unwrap();
         loop {
@@ -592,7 +609,6 @@ impl Server {
     /// them on the UDP socket, until quiche reports that there are no more
     /// packets to be sent.
     pub fn send(&mut self) -> Result<(), ServerError> {
-        self.continue_write = false;
         for client in self.clients.values_mut() {
             // Reduce max_send_burst by 25% if loss is increasing more than 0.1%.
             // let loss_rate = client.conn.stats().lost as f64 / client.conn.stats().sent as f64;
@@ -608,83 +624,110 @@ impl Server {
             //             prev_max_send_burst, client.max_send_burst, prev_loss_rate, loss_rate);
             // }
 
-            let max_send_burst = client.conn.send_quantum().min(client.max_send_burst)
-                / client.max_datagram_size
-                * client.max_datagram_size;
+            let mut continue_write = true;
+            while continue_write {
+                continue_write = false;
 
-            while let Some((local_addr, peer_addr, send_instr)) =
-                self.scheduler.get_best_path(&mut client.conn)
-            {
-                let token = self.src_addr_tokens[&local_addr];
-                let socket = &mut self.sockets[token];
-                if !socket.writable_for_dest(&peer_addr) {
-                    // Ideally we would check the second-best path but this is not currently possible
-                    continue;
-                }
+                // The maximum amount of data that should be written in one burst with GSO.
+                // Explanation division and multiplication: https://github.com/cloudflare/quiche/pull/1213
+                // Applies to each socket individually.
+                let max_send_burst = client.conn.send_quantum().min(client.max_send_burst)
+                    / client.max_datagram_size
+                    * client.max_datagram_size;
 
-                if socket.until >= max_send_burst {
-                    // The QUIC connection might have more data to write than max_send_burst.
-                    // Set continue_write to immediately exit the event poll.
-                    self.continue_write = true;
-                    break;
-                }
+                let mut it = 0;
+                while let Some((local_addr, peer_addr, send_instr)) =
+                    self.scheduler.get_best_path(&mut client.conn)
+                {
+                    it += 1;
 
-                let (written, send_info) = match client.conn.send_on_path_with_instructions(
-                    &mut socket.buf[socket.until..max_send_burst],
-                    Some(local_addr),
-                    Some(peer_addr),
-                    Some(send_instr),
-                ) {
-                    Ok(v) => v,
+                    let token = self.src_addr_tokens[&local_addr];
+                    let socket = &mut self.sockets[token];
 
-                    Err(quiche::Error::Done) => {
-                        trace!("conn.send: {} done writing", client.conn.trace_id());
+                    if !socket.writable_for_dest(&peer_addr) {
+                        // The socket has already data queued for sending. Only more packets toward the same
+                        // destination can be queued.
                         break;
                     }
 
-                    Err(e) => {
-                        error!("{} conn.send failed: {:?}", client.conn.trace_id(), e);
-                        client.conn.close(false, 0x1, b"fail").ok();
-                        // Not sure what's correct in this situation.
+                    // TODO: get send quantum for that specific path
+
+                    if socket.until >= max_send_burst {
+                        // The QUIC connection might have more data to write than max_send_burst.
+                        // Write data to the socket and try to generate more packets.
+                        continue_write = true;
                         break;
                     }
-                };
 
-                socket.until += write;
-                let _ = socket.send_info.get_or_insert(send_info);
-                socket.max_datagram_size = client.max_datagram_size;
+                    let (written, send_info) = match client.conn.send_on_path_with_instructions(
+                        &mut socket.buf[socket.until..max_send_burst],
+                        Some(local_addr),
+                        Some(peer_addr),
+                        Some(send_instr),
+                    ) {
+                        Ok(v) => v,
 
-                trace!(
-                    "{:}->{:} conn.send: wrote {} bytes",
-                    send_info.from,
-                    send_info.to,
-                    write
-                );
+                        Err(quiche::Error::Done) => {
+                            trace!(
+                                "{}->{} {}, [{}], conn.send returned Done",
+                                local_addr,
+                                peer_addr,
+                                it,
+                                client.conn.trace_id()
+                            );
+                            break;
+                        }
 
-                if write < client.max_datagram_size {
-                    // https://github.com/cloudflare/quiche/commit/eac98fae15ce67ee774125c90db0d59c4deda5da
-                    // The QUIC connection might has more data to write than this it did not fill.
-                    // Set continue_write to immediately exit the event poll.
-                    self.continue_write = true;
+                        Err(e) => {
+                            error!("{} conn.send failed: {:?}", client.conn.trace_id(), e);
+                            client.conn.close(false, 0x1, b"fail").ok();
+                            // Not sure what's correct in this situation.
+                            break;
+                        }
+                    };
 
-                    // We can not continue appending packets to this send buffer. Immediately break to
-                    // sending the buffer.
-                    break;
+                    socket.until += written;
+                    let _ = socket.send_info.get_or_insert(send_info);
+                    socket.max_datagram_size = client.max_datagram_size;
+
+                    trace!(
+                        "{:}->{:} conn.send [{}] returned {} bytes, max_datagram_size={}",
+                        send_info.from,
+                        send_info.to,
+                        it,
+                        written,
+                        client.max_datagram_size,
+                    );
+
+                    if !client.conn.is_established() {
+                        trace!("Disabled GSO packet assembly during connection establishment");
+                        continue_write = true;
+                        break;
+                    }
+
+                    if written < client.max_datagram_size {
+                        // https://github.com/cloudflare/quiche/commit/eac98fae15ce67ee774125c90db0d59c4deda5da
+                        // The QUIC connection might has more data to write.
+                        continue_write = true;
+
+                        // No full-sized packet has been written; only the last packet can be less than
+                        // max_datagram_size if we want to use GSO.
+                        break;
+                    }
                 }
-            }
 
-            // Pass the buffer packet data to the UDP socket.
-            for (_local_addr, token) in self.src_addr_tokens.iter() {
-                let socket = &mut self.sockets[*token];
-                if let Err(e) = socket.try_send() {
-                    return Err(ServerError::FatalSocket(format!(
-                        "socket.try_send failed: {:?}",
-                        e
-                    )));
+                // Try to send the queued data
+                for (_, token) in self.src_addr_tokens.iter() {
+                    let socket = &mut self.sockets[*token];
+                    if let Err(e) = socket.try_send() {
+                        return Err(ServerError::FatalSocket(format!(
+                            "socket.try_send failed: {:?}",
+                            e
+                        )));
+                    }
                 }
             }
         }
-
         Ok(())
     }
 

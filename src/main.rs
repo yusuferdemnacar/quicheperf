@@ -300,7 +300,7 @@ fn quicheperf_client(
 
     let mut protocol: Option<Protocol> = None;
 
-    client.connect()?;
+    client.connect(&mut scheduler)?;
 
     loop {
         if terminate.load(Ordering::SeqCst) {
@@ -379,10 +379,12 @@ fn quicheperf_server(
 
         for event in events.iter() {
             let token = event.token().into();
-            if event.is_writable() {
-                server.writable(token)?;
-            }
-            if let Err(e) = server.readable(token) {
+
+            // Writable mio notifications disabled for now
+            // if event.is_writable() {
+            server.on_writable(token)?;
+            // }
+            if let Err(e) = server.on_readable(token) {
                 match e {
                     server::ServerError::FatalSocket(e) => {
                         error!("{}", e);

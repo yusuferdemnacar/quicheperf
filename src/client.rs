@@ -16,6 +16,15 @@ pub enum ClientError {
     Other(String),
 }
 
+/// SocketState manages one UDP socket and the buffer that holds the packets that will
+/// eventually be written to that socket.
+///
+/// The client will either directly write data to `self.socket` or use `schedule_send()`.
+/// Then, `try_send()` will try to actually write the buffer to the UDP socket. That
+/// operation can fail under heavy load with `WouldBlock`, indicating that the OS buffers
+/// are filled and that the write operation should be retried later.
+///
+/// Could be improved to support GSO (see the server equivalent).
 struct SocketState {
     socket: mio::net::UdpSocket,
     buf: [u8; MAX_DATAGRAM_SIZE],
@@ -58,8 +67,8 @@ impl SocketState {
         trace!("try_send: schedule {} bytes to {}", self.until, to);
     }
 
-    /// Try to send the scheduled buffer, if it exists.
-    /// Returns Ok(0) if the socket returned WouldBlock.
+    /// Try to send the scheduled buffer, if it exists. Returns `Ok(0)` if the
+    /// socket returns `WouldBlock`.
     fn try_send(&mut self) -> Result<usize, ClientError> {
         if self.to.is_none() {
             return Ok(0);
@@ -123,11 +132,7 @@ impl Client {
         let mut sockets = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
         let mut src_addr_tokens = HashMap::new();
         let poll = mio::Poll::new().unwrap();
-        // Create the UDP socket backing the QUIC connection, and register it with
-        // the event loop. Either we provided addresses, or we rely on the default
-        // INADDR_IN or IN6ADDR_ANY depending on the IP family of the
-        // server address. This is needed on macOS and BSD variants that don't
-        // support binding to IN6ADDR_ANY for both v4 and v6.
+
         let mut addrs = Vec::new();
         for src_addr in local_addrs.into_iter() {
             let socket = mio::net::UdpSocket::bind(src_addr).map_err(|e| {
@@ -160,11 +165,17 @@ impl Client {
             let token = sockets.insert(socket_state);
             src_addr_tokens.insert(local_addr, token);
             addrs.push(local_addr);
+
+            // Disabled notifications on WRITABLE to stop poll.poll being waken up unnecessarily.
+            // This will lead to problems under heavy load, more specifically if writing to the UDP
+            // socket in `SocketState` returns WouldBlock. In these cases, the application should retry
+            // writing to that socket as soon as it's writable again.
+            // TODO: find a good solution to this problem
             poll.registry()
                 .register(
                     &mut sockets[token].socket,
                     mio::Token(token),
-                    mio::Interest::READABLE.add(mio::Interest::WRITABLE),
+                    mio::Interest::READABLE, // .add(mio::Interest::WRITABLE),
                 )
                 .unwrap();
         }
@@ -220,7 +231,10 @@ impl Client {
         })
     }
 
-    pub fn connect(&mut self) -> Result<(), ClientError> {
+    pub fn connect(
+        &mut self,
+        scheduler: &mut Box<dyn MultipathScheduler>,
+    ) -> Result<(), ClientError> {
         info!(
             "Connecting to {:} from {:}", // with scid {:?}",
             self.peer_addrs[0],
@@ -228,19 +242,7 @@ impl Client {
         );
 
         // Send initial message to server
-        let mut write_buf = [0; MAX_DATAGRAM_SIZE];
-        let (write, send_info) = self.conn.send(&mut write_buf).expect("initial send failed");
-        let token = self.src_addr_tokens[&send_info.from];
-        let socket = &mut self.sockets[token];
-        socket.schedule_send(Some(&write_buf), write, send_info.to);
-        socket.try_send()?;
-
-        trace!(
-            "init write: written {} bytes from {:} to {:}",
-            write,
-            send_info.from,
-            send_info.to
-        );
+        self.send(scheduler)?;
 
         self.app_data_start = Some(std::time::Instant::now());
 
@@ -252,48 +254,65 @@ impl Client {
         ui_timeout: Duration,
         protocol_timeout: Duration,
     ) -> Result<(), ClientError> {
-        let mut is_conn_timeout = false;
-        let mut timeout_duration = Duration::ZERO;
-        // if !self.conn.is_in_early_data() || self.protocol.is_some() {
+        let mut conn_timeout_expired = false;
+        let mut poll_duration = Duration::ZERO;
+
         if !self.conn.is_in_early_data() || protocol_timeout < Duration::MAX {
             let conn_timeout = self.conn.timeout().unwrap_or(Duration::ZERO);
             let timeout = std::cmp::min(std::cmp::min(conn_timeout, ui_timeout), protocol_timeout);
-            is_conn_timeout = conn_timeout == timeout;
-            let poll_wait = Instant::now();
+
+            let poll_start = Instant::now();
             if let Err(e) = self.poll.poll(&mut self.events, Some(timeout)) {
                 if e.kind() != std::io::ErrorKind::Interrupted {
                     return Err(ClientError::Other(format!("Poll returned error: {}", e)));
                 }
             }
-            timeout_duration = poll_wait.elapsed();
+            poll_duration = poll_start.elapsed();
+
+            conn_timeout_expired =
+                conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
+
+            // let (readable, writable) = self.events.iter().fold(
+            //     (false, false),
+            //     |(r, w), e| (r || e.is_readable(), w || e.is_writable()));
+
             log::trace!(
-                "timeout (ms) {}, slept {}, events_empty={}: conn={}, ui={}, protocol={}",
+                "timeout (ms) {}, slept {}, ev={} (r={}, w={}): conn={}, ui={}, protocol={}",
                 timeout.as_millis(),
-                timeout_duration.as_millis(),
-                self.events.is_empty(),
+                poll_duration.as_millis(),
+                !self.events.is_empty(),
+                "?",
+                "?",
+                // readable,
+                // writable,
                 conn_timeout.as_millis(),
                 ui_timeout.as_millis(),
                 protocol_timeout.as_millis(),
             );
         }
 
-        // If the event loop reported no events, it means that the timeout has expired
-        if self.events.is_empty() && is_conn_timeout {
-            trace!("timed out after {:?}", timeout_duration);
+        if self.events.is_empty() && conn_timeout_expired {
+            trace!(
+                "timed out after {:?}, events_empty={}",
+                poll_duration,
+                self.events.is_empty()
+            );
+            // Running this if a timeout has not actually occured has no adverse effect.
             self.conn.on_timeout();
         }
 
         Ok(())
     }
 
-    // Read incoming UDP packets from the socket and feed them to quiche,
-    // until there are no more packets to read.
+    /// Read incoming UDP packets from the socket and feed them to quiche,
+    /// until there are no more packets to read.
     pub fn read(&mut self) -> Result<(), ClientError> {
         for event in &self.events {
             let token = event.token().into();
             let socket = &mut self.sockets[token];
 
-            if event.is_writable() && socket.send_pending() {
+            // if event.is_writable() && socket.send_pending() {
+            if socket.send_pending() {
                 socket.try_send()?;
             }
 
@@ -440,30 +459,31 @@ impl Client {
             let token = self.src_addr_tokens[&local_addr];
             let socket = &mut self.sockets[token];
             if socket.send_pending() {
-                // The scheduler will probably return this same path over and over again. Break to exit (potential) infinite loop.
-                // In most cases, socket.try_send() would block now. We wait for a writable event.
+                // The scheduler will probably return this same path over and over again. Break
+                // to exit (potential) infinite loop. In most cases, socket.try_send() would
+                // block now. We wait for a writable event.
                 trace!("outgoing packet on socket {} pending", local_addr);
                 break;
             }
 
-            let (write, send_info) =
-                match self
-                    .conn
-                    .send_on_path_with_instructions(&mut socket.buf, Some(local_addr), Some(peer_addr), Some(send_instr))
-                {
-                    Ok(v) => v,
+            let (write, send_info) = match self.conn.send_on_path_with_instructions(
+                &mut socket.buf,
+                Some(local_addr),
+                Some(peer_addr),
+                Some(send_instr),
+            ) {
+                Ok(v) => v,
 
-                    Err(quiche::Error::Done) => {
-                        trace!("{} -> {}: done writing to conn", local_addr, peer_addr);
-                        break;
-                    }
-                    Err(e) => {
-                        error!("{} -> {}: conn.send failed: {:?}", local_addr, peer_addr, e);
-
-                        self.conn.close(false, 0x1, b"fail").ok();
-                        break;
-                    }
-                };
+                Err(quiche::Error::Done) => {
+                    trace!("{} -> {}: done writing to conn", local_addr, peer_addr);
+                    break;
+                }
+                Err(e) => {
+                    error!("{} -> {}: conn.send failed: {:?}", local_addr, peer_addr, e);
+                    self.conn.close(false, 0x1, b"fail").ok();
+                    break;
+                }
+            };
 
             socket.schedule_send(None, write, send_info.to);
             socket.try_send()?;
