@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 
 use crate::common;
-use crate::protocol::Protocol;
 
 use super::common::*;
 use super::sendto;
@@ -120,7 +119,7 @@ impl SocketState {
 pub struct Client {
     pub conn: quiche::Connection,
     client_id: ClientId,
-    protocol: Option<Protocol>,
+    protocol: Option<Protocols>,
     password: Option<String>,
     // partial_requests: std::collections::HashMap<u64, PartialRequest>,
     // partial_responses: std::collections::HashMap<u64, PartialResponse>,
@@ -151,11 +150,19 @@ impl Client {
         if self.protocol.is_none() && (self.conn.is_in_early_data() || self.conn.is_established()) {
             let app_proto = self.conn.application_proto();
 
-            if QUICHEPERF_ALPN.contains(&app_proto) {
-                info!("Connection established. Selecting QUICHEPERF protocol.");
-                self.protocol = Some(Protocol::new_with_password(self.password.clone()));
+            if crate::perf::ALPN.contains(&app_proto) {
+                info!("Connection established. Selecting PERF protocol.");
+                let perf = crate::perf::Perf::new_with_password(self.password.clone());
+                self.protocol = Some(Protocols::Perf(perf));
+            } else if crate::proxy::ALPN.contains(&app_proto) { 
+                info!("Connection established. Selecting PROXY protocol.");
+                self.protocol = Some(Protocols::Proxy(crate::proxy::Proxy {}));
             } else {
-                warn!("ALPN did not match {:?}: {:?}", QUICHEPERF_ALPN, app_proto);
+                warn!(
+                    "ALPN did not match {:?}: {:?}",
+                    crate::perf::ALPN,
+                    app_proto
+                );
                 self.conn.close(false, 0x1, b"No ALPN match").ok();
             }
         }
@@ -164,7 +171,10 @@ impl Client {
         self.max_datagram_size = self.conn.max_send_udp_payload_size();
 
         if let Some(protocol) = self.protocol.as_mut() {
-            protocol.server_dispatch(&mut self.conn);
+            match protocol {
+                Protocols::Perf(perf) => perf.server_dispatch(&mut self.conn),
+                Protocols::Proxy(proxy) => todo!(),
+            };
         }
 
         self.handle_path_events();

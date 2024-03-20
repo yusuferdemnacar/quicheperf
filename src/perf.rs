@@ -6,6 +6,8 @@ use quiche::Connection;
 use serde::Deserialize;
 use serde::Serialize;
 
+pub const ALPN: [&[u8]; 2] = [b"quicheperf", b"quicheperf-00"];
+
 pub const SEND_DATA: [u8; 65507] = [0; 65507];
 
 const BITRATE_TIMER: Duration = Duration::from_millis(10);
@@ -29,7 +31,7 @@ pub struct TestConfigAck {
 }
 
 #[derive(Debug, Clone)]
-pub struct Protocol {
+pub struct Perf {
     pub config_sent: bool,
     pub config_acked: bool,
     pub tc: Option<TestConfig>,
@@ -45,7 +47,7 @@ pub struct Protocol {
     buf: [u8; 65535],
 }
 
-impl Protocol {
+impl Perf {
     /// Used by the client.
     pub fn new_with_tc(tc: TestConfig) -> Self {
         let password = tc.password.clone();
@@ -121,7 +123,7 @@ impl Protocol {
     }
 
     // TODO: Merge into dispatch
-    pub fn work(&mut self, conn: &mut Connection) -> quiche::Result<()> {
+    fn work(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         if !self.config_acked {
             return Err(quiche::Error::Done);
         }
@@ -136,7 +138,7 @@ impl Protocol {
     }
 
     /// Check if the test duration expired and close connection if applicable
-    pub fn close_after_duration(&mut self, conn: &mut Connection) -> bool {
+    fn close_after_duration(&mut self, conn: &mut Connection) -> bool {
         if self.finished {
             return true;
         }
@@ -164,7 +166,7 @@ impl Protocol {
     }
 
     /// Called by client to kick off test
-    pub fn send_config(&mut self, conn: &mut Connection) -> quiche::Result<()> {
+    fn send_config(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         trace!("Trying to send test configuration request");
 
         let tc = match self.tc.as_ref() {
@@ -199,7 +201,7 @@ impl Protocol {
     }
 
     // Called by client after sending TestConfig
-    pub fn recv_config_ack(&mut self, conn: &mut Connection) -> quiche::Result<()> {
+    fn recv_config_ack(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         while let Ok((read, _fin)) = conn.stream_recv(0, &mut self.buf) {
             trace!(
                 "recv_config_ack: {} received {} bytes from stream {}",
@@ -250,7 +252,7 @@ impl Protocol {
         }
     }
 
-    pub fn send_data(&mut self, conn: &mut Connection) -> quiche::Result<()> {
+    fn send_data(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         let send_quantum = self.bitrate_target_quantum();
         let mut bytes_to_send = send_quantum.unwrap_or(SEND_DATA.len() as u64 * 1000);
 
@@ -276,7 +278,7 @@ impl Protocol {
         Ok(())
     }
 
-    pub fn recv_data(&mut self, conn: &mut Connection) -> quiche::Result<()> {
+    fn recv_data(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         trace!("receiving data");
         while let Ok((read, fin)) = conn.stream_recv(0, &mut self.buf) {
             trace!(
@@ -294,7 +296,7 @@ impl Protocol {
         Ok(())
     }
 
-    pub fn recv_config(&mut self, conn: &mut Connection) -> quiche::Result<()> {
+    fn recv_config(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         debug!("receiving test config");
         let s = 0;
         match conn.stream_recv(s, &mut self.buf) {

@@ -13,19 +13,22 @@ use zstd::stream::Encoder;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use crate::protocol::TestConfig;
+use crate::perf::TestConfig;
 
 pub const MAX_BUF_SIZE: usize = 65507;
 
 pub const MAX_DATAGRAM_SIZE: usize = 1350;
-
-pub const QUICHEPERF_ALPN: [&[u8]; 2] = [b"quicheperf", b"quicheperf-00"];
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct TestMetadata {
     pub test_config: TestConfig,
     pub cc_algorithm: String,
     pub version: String,
+}
+
+pub enum Protocols {
+    Perf(crate::perf::Perf),
+    Proxy(crate::proxy::Proxy),
 }
 
 /// Set SO_TXTIME socket option.

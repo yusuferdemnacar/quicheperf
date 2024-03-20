@@ -8,7 +8,7 @@ use std::time::Instant;
 use itertools::Itertools;
 use quiche::scheduler::{MultipathScheduler, SchedulingDecisions};
 
-use crate::protocol::TestConfig;
+use crate::perf::TestConfig;
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 struct FourTuple {
@@ -42,7 +42,7 @@ impl PathStats {
 const UPDATE_FREQ: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
-pub struct UI {
+pub struct PerfUI {
     client_sending: bool,
     start: Instant,
     last_update: Option<Instant>,
@@ -57,9 +57,9 @@ pub struct UI {
     paths: HashMap<FourTuple, PathStats>,
 }
 
-impl UI {
+impl PerfUI {
     pub fn new(client_sending: bool) -> Self {
-        UI {
+        PerfUI {
             client_sending,
             start: Instant::now(),
             last_update: None,

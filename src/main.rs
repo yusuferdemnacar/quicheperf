@@ -31,24 +31,27 @@ extern crate serde;
 mod cli;
 mod client;
 mod common;
-mod protocol;
+mod perf;
+mod perf_ui;
+mod proxy;
+mod proxy_ui;
 mod sendto;
 mod server;
-mod ui;
 
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::protocol::TestConfig;
+use crate::perf::TestConfig;
 use cli::Args;
 use client::{Client, ClientError};
 use common::PathStatusUpdater;
 use git_testament::git_testament_macros;
 
 use clap::Parser;
-use protocol::Protocol;
+use perf::Perf;
+use proxy::Proxy;
 use quiche::scheduler::{self, MultipathScheduler};
 use server::Server;
 use std::net::SocketAddr;
@@ -62,9 +65,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
         }
     };
 
-    config
-        .set_application_protos(&common::QUICHEPERF_ALPN)
-        .unwrap();
+    config.set_application_protos(&perf::ALPN).unwrap();
 
     config.set_max_idle_timeout(30_000); // in ms
     config.set_max_recv_udp_payload_size(common::MAX_DATAGRAM_SIZE);
@@ -150,7 +151,7 @@ fn main() -> ExitCode {
     // Parse CLI parameters.
     let args = cli::Args::parse();
 
-    let mut config = match make_quiche_config(&args) {
+    let mut quiche_config = match make_quiche_config(&args) {
         Ok(v) => v,
         Err(exitcode) => return exitcode,
     };
@@ -237,7 +238,7 @@ fn main() -> ExitCode {
                 bitrate_target: bitrate_target,
             };
 
-            let client = client::Client::new(local_addrs, peer_addrs, config).unwrap();
+            let client = client::Client::new(local_addrs, peer_addrs, quiche_config).unwrap();
 
             return match quicheperf_client(client, scheduler, tc, psu, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
@@ -255,17 +256,17 @@ fn main() -> ExitCode {
             key,
             oneshot: _,
         } => {
-            if let Err(e) = config.load_cert_chain_from_pem_file(cert.to_str().unwrap()) {
+            if let Err(e) = quiche_config.load_cert_chain_from_pem_file(cert.to_str().unwrap()) {
                 eprintln!("Error loading certificate from {:?}: {}", cert, e);
                 return ExitCode::FAILURE;
             };
 
-            if let Err(e) = config.load_priv_key_from_pem_file(key.to_str().unwrap()) {
+            if let Err(e) = quiche_config.load_priv_key_from_pem_file(key.to_str().unwrap()) {
                 eprintln!("Error loading private key from {:?}: {}", key, e);
                 return ExitCode::FAILURE;
             };
 
-            let server = match server::Server::new(local_addrs, args.password, config, scheduler) {
+            let server = match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("Failed to set up server: {:?}", e);
@@ -274,6 +275,60 @@ fn main() -> ExitCode {
             };
 
             return match quicheperf_server(server, terminate) {
+                Ok(_) => ExitCode::SUCCESS,
+                Err(server::ServerError::FatalSocket(e)) => {
+                    eprintln!("Fatal: {}", e);
+                    ExitCode::FAILURE
+                }
+                Err(server::ServerError::Unexpected(e)) => {
+                    eprintln!("Unexpected: {}", e);
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        cli::Subcommands::ProxyClient { peer_addrs } => {
+            if args.local_addrs.len() != peer_addrs.len() {
+                eprintln!(
+                "Same number of local and peer addresses expected. One path will be created per pair.\n\
+                local_addrs={:?}, peer_addrs={:?}",
+                args.local_addrs, peer_addrs
+            );
+                return ExitCode::FAILURE;
+            }
+
+            let client = client::Client::new(local_addrs, peer_addrs, quiche_config).unwrap();
+
+            return match quicheproxy_client(client, scheduler, terminate) {
+                Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
+
+                Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
+                    eprintln!("{}", e);
+                    ExitCode::FAILURE
+                }
+
+                Ok(_) => ExitCode::SUCCESS,
+            };
+        }
+        cli::Subcommands::ProxyServer { cert, key } => {
+            if let Err(e) = quiche_config.load_cert_chain_from_pem_file(cert.to_str().unwrap()) {
+                eprintln!("Error loading certificate from {:?}: {}", cert, e);
+                return ExitCode::FAILURE;
+            };
+
+            if let Err(e) = quiche_config.load_priv_key_from_pem_file(key.to_str().unwrap()) {
+                eprintln!("Error loading private key from {:?}: {}", key, e);
+                return ExitCode::FAILURE;
+            };
+
+            let server = match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("Failed to set up server: {:?}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            return match quicheproxy_server(server, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
                     eprintln!("Fatal: {}", e);
@@ -295,10 +350,10 @@ fn quicheperf_client(
     mut psu: PathStatusUpdater,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), ClientError> {
-    let mut ui = ui::UI::new(tc.client_sending);
+    let mut ui = perf_ui::PerfUI::new(tc.client_sending);
     ui.new_test(&tc).ok();
 
-    let mut protocol: Option<Protocol> = None;
+    let mut protocol: Option<Perf> = None;
 
     client.connect(&mut scheduler)?;
 
@@ -329,9 +384,9 @@ fn quicheperf_client(
         if (client.conn.is_established() || client.conn.is_in_early_data()) && protocol.is_none() {
             let app_proto = client.conn.application_proto();
 
-            if common::QUICHEPERF_ALPN.contains(&app_proto) {
+            if perf::ALPN.contains(&app_proto) {
                 info!("Connection established. Selecting QUICHEPERF protocol.");
-                protocol = Some(protocol::Protocol::new_with_tc(tc.clone()));
+                protocol = Some(perf::Perf::new_with_tc(tc.clone()));
             } else {
                 warn!("No ALPN matched");
             }
@@ -360,6 +415,123 @@ fn quicheperf_client(
 }
 
 fn quicheperf_server(
+    mut server: Server,
+    terminate: Arc<AtomicBool>,
+) -> Result<(), server::ServerError> {
+    let mut events = mio::Events::with_capacity(1024);
+
+    loop {
+        if terminate.load(Ordering::SeqCst) {
+            info!("Termination signal received, closing connection");
+            for c in server.clients.values_mut().into_iter() {
+                c.conn.close(true, 0x1, b"user terminated").ok();
+            }
+            // TODO: Send out connection close messages and wait for a few seconds
+            return Ok(());
+        }
+
+        server.poll(&mut events)?;
+
+        for event in events.iter() {
+            let token = event.token().into();
+
+            // Writable mio notifications disabled for now
+            // if event.is_writable() {
+            server.on_writable(token)?;
+            // }
+            if let Err(e) = server.on_readable(token) {
+                match e {
+                    server::ServerError::FatalSocket(e) => {
+                        error!("{}", e);
+                        break;
+                    }
+                    server::ServerError::Unexpected(e) => {
+                        trace!("{}", e);
+                        continue;
+                    }
+                }
+            }
+        }
+        server.send()?;
+        server.garbage_collect();
+    }
+}
+
+fn quicheproxy_client(
+    mut client: Client,
+    mut scheduler: Box<dyn MultipathScheduler>,
+    terminate: Arc<AtomicBool>,
+) -> Result<(), ClientError> {
+    let mut ui = proxy_ui::ProxyUI{};
+    // ui.new_test(&tc).ok();
+
+    // TODO: replace with proxy protocol
+    let mut protocol: Option<Proxy> = None;
+
+    // Setup proxy protocol
+    client.connect(&mut scheduler)?;
+
+    loop {
+        if terminate.load(Ordering::SeqCst) {
+            client.conn.close(true, 0x1, b"user terminated").ok();
+        }
+
+        // if protocol.is_some() {
+        //     ui.update(&client.conn, &mut scheduler).ok();
+        // }
+
+        let ui_timeout = ui.timeout();
+        //let protocol_timeout = if let Some(protocol) = protocol.as_ref() {
+        let protocol_timeout = if false {
+            // protocol.timeout()
+            Duration::MAX
+        } else {
+            Duration::MAX
+        };
+        client.poll(ui_timeout, protocol_timeout)?;
+
+        client.read()?;
+
+        if client.conn.is_closed() {
+            break;
+        }
+
+        // Create a new application protocol session once the QUIC connection is established.
+        if (client.conn.is_established() || client.conn.is_in_early_data()) && protocol.is_none() {
+            let app_proto = client.conn.application_proto();
+
+            if proxy::ALPN.contains(&app_proto) {
+                info!("Connection established. Selecting PROXY protocol.");
+                protocol = Some(proxy::Proxy{});
+            } else {
+                warn!("No ALPN matched");
+            }
+        }
+
+        // psu.check(&mut client.conn);
+
+        client.handle_cids();
+        client.handle_path_events();
+        client.probe_paths_if_necessary()?;
+
+        // TODO
+        // if let Some(protocol) = protocol.as_mut() {
+        //     protocol.client_dispatch(&mut client.conn);
+        // }
+
+        client.send(&mut scheduler)?;
+    }
+
+    client.on_close()?;
+
+    // if protocol.is_some() {
+    //     ui.print_summary(&client.conn).ok();
+    // }
+
+    Ok(())
+}
+
+fn quicheproxy_server(
     mut server: Server,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), server::ServerError> {

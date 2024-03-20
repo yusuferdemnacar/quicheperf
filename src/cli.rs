@@ -150,6 +150,7 @@ pub enum Subcommands {
         #[arg(long = "status", value_parser=parse_path_status)]
         path_statuses: Vec<(std::time::Duration, usize, PathStatus)>,
     },
+
     /// Run quicheperf server
     Server {
         /// Path to the server certificate
@@ -163,5 +164,23 @@ pub enum Subcommands {
         /// quit after one run
         #[arg(long, short = '1')]
         oneshot: bool,
+    },
+
+    /// Run proxy client
+    ProxyClient {
+        /// The remote address(es) to connect to
+        #[arg(short = 'c', required = true, value_parser=resolve_addr)]
+        peer_addrs: Vec<SocketAddr>,
+    },
+
+    /// Run proxy server
+    ProxyServer {
+        /// Path to the server certificate
+        #[arg(long)]
+        cert: PathBuf,
+
+        /// Path to the certificate's private key
+        #[arg(long)]
+        key: PathBuf,
     },
 }
