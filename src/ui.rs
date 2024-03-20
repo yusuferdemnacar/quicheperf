@@ -149,12 +149,12 @@ impl UI {
             if npaths < 2 {
                 writeln!(
                     io::stdout(),
-                    "| {:<3} | {:<5} | {:<5} | {:<10} | {:<18} |",
+                    "| {:<3} | {:<5} | {:<5} ‖ {:<13} | {:<24} |",
                     "sec",
                     "time",
                     "FC_av",
                     "P0 Mbps",
-                    "P0 Lost/Total (sp)",
+                    "P0 Lost/Sched/Total (sp)",
                 )?;
             } else {
                 let mut pstr = String::new();
@@ -305,14 +305,15 @@ impl UI {
             pstr.push_str(&format!("| {:>10.2} | {:>17.4}% ", ptput, plost_perc));
         }
 
-        writeln!(io::stdout(), "{:->88}", "")?;
+        writeln!(io::stdout(), "{:->66}", "")?;
 
         let first_col = if self.client_sending { "Snt" } else { "Rcv" };
         if conn.path_stats().count() < 2 {
             writeln!(
                 io::stdout(),
-                "| {:>3} | {:>10.2} | {:>5} {:>11.4}% |",
+                "| {:>3} | {:>13} ‖ {:>7.2}       | {:>5} {:>11.4}% |",
                 first_col,
+                "",
                 tput_total,
                 stats.lost,
                 lost_perc
