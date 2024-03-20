@@ -39,13 +39,15 @@ pub fn set_txtime_sockopt(sock: &mio::net::UdpSocket) -> io::Result<()> {
     use nix::sys::socket::setsockopt;
     use nix::sys::socket::sockopt::TxTime;
     use std::os::unix::io::AsRawFd;
+    use std::os::unix::io::BorrowedFd;
 
     let config = nix::libc::sock_txtime {
         clockid: libc::CLOCK_MONOTONIC,
         flags: 0,
     };
 
-    setsockopt(sock.as_raw_fd(), TxTime, &config)?;
+    let fd = &unsafe { BorrowedFd::borrow_raw(sock.as_raw_fd()) };
+    setsockopt(fd, TxTime, &config)?;
 
     Ok(())
 }
@@ -66,8 +68,9 @@ fn get_buffer_size(
 ) -> Result<usize, nix::errno::Errno> {
     use nix::sys::socket::sockopt;
     use std::os::unix::io::AsRawFd;
+    use std::os::unix::io::BorrowedFd;
 
-    let fd = sock.as_raw_fd();
+    let fd = &unsafe { BorrowedFd::borrow_raw(sock.as_raw_fd()) };
     let doubled_size = match buf_type {
         UDPBufType::Rcv => nix::sys::socket::getsockopt(fd, sockopt::RcvBuf),
         UDPBufType::Snd => nix::sys::socket::getsockopt(fd, sockopt::SndBuf),
@@ -86,8 +89,9 @@ fn set_buffer_size(
     use nix::sys::socket::setsockopt;
     use nix::sys::socket::sockopt;
     use std::os::unix::io::AsRawFd;
+    use std::os::unix::io::BorrowedFd;
 
-    let fd = sock.as_raw_fd();
+    let fd = &unsafe { BorrowedFd::borrow_raw(sock.as_raw_fd()) };
     match buf_type {
         UDPBufType::Rcv => setsockopt(fd, sockopt::RcvBuf, &size),
         UDPBufType::Snd => setsockopt(fd, sockopt::SndBuf, &size),
@@ -193,9 +197,10 @@ pub fn bind_socket_to_if(
     ifname: &String,
 ) -> Result<(), nix::errno::Errno> {
     use nix::sys::socket::{setsockopt, sockopt::BindToDevice};
-    use std::{ffi::OsString, os::fd::AsRawFd};
+    use std::{ffi::OsString, os::fd::AsRawFd, os::fd::BorrowedFd};
 
-    setsockopt(socket.as_raw_fd(), BindToDevice, &OsString::from(ifname))
+    let fd = &unsafe { BorrowedFd::borrow_raw(socket.as_raw_fd()) };
+    setsockopt(fd, BindToDevice, &OsString::from(ifname))
 }
 
 #[cfg(feature = "qlog")]
