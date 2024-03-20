@@ -81,7 +81,7 @@ pub struct Args {
     pub scheduler: Option<SchedulerOpts>,
 
     /// The local address(es) or interface names to connect from
-    #[arg(short, default_value = "0.0.0.0:0", global = true)]
+    #[arg(short, default_value = "[::]:0", global = true)]
     pub local_addrs: Vec<String>,
 
     /// Initial connection-wide flow control limit

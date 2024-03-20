@@ -301,7 +301,15 @@ impl Server {
         let mut addrs = Vec::new();
         for src_addr in local_addrs {
             println!("listening on {:?}", src_addr);
-            let socket = mio::net::UdpSocket::bind(src_addr).unwrap();
+            let socket = match mio::net::UdpSocket::bind(src_addr) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Err(ServerError::FatalSocket(format!(
+                        "failed binding UDP socket to {}: {}",
+                        src_addr, e
+                    )))
+                }
+            };
             let local_addr = socket.local_addr().unwrap();
 
             match set_txtime_sockopt(&socket) {
