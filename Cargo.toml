@@ -43,6 +43,7 @@ git-testament = "0.2.1"
 clap = { version = "4.1.4", features = ["derive"] }
 parse-size = "1.0.0"
 ctrlc = "3.4.0"
+riptun = { git = "https://github.com/hendrikcech/riptun.git", branch = "develop", default-features = false, features = ["mio-impl", "mio"] }
 
 # [lib]
 # crate-type = ["lib"]

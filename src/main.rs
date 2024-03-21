@@ -38,6 +38,7 @@ mod proxy_ui;
 mod sendto;
 mod server;
 
+use std::cmp::min;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -51,7 +52,6 @@ use git_testament::git_testament_macros;
 
 use clap::Parser;
 use perf::Perf;
-use proxy::Proxy;
 use quiche::scheduler::{self, MultipathScheduler};
 use server::Server;
 use std::net::SocketAddr;
@@ -240,7 +240,7 @@ fn main() -> ExitCode {
 
             let client = client::Client::new(local_addrs, peer_addrs, quiche_config).unwrap();
 
-            return match quicheperf_client(client, scheduler, tc, psu, terminate) {
+            return match perf_client(client, scheduler, tc, psu, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
@@ -266,15 +266,16 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
 
-            let server = match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("Failed to set up server: {:?}", e);
-                    return ExitCode::FAILURE;
-                }
-            };
+            let server =
+                match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("Failed to set up server: {:?}", e);
+                        return ExitCode::FAILURE;
+                    }
+                };
 
-            return match quicheperf_server(server, terminate) {
+            return match perf_server(server, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
                     eprintln!("Fatal: {}", e);
@@ -298,7 +299,7 @@ fn main() -> ExitCode {
 
             let client = client::Client::new(local_addrs, peer_addrs, quiche_config).unwrap();
 
-            return match quicheproxy_client(client, scheduler, terminate) {
+            return match proxy_client(client, scheduler, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
@@ -320,15 +321,16 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
 
-            let server = match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("Failed to set up server: {:?}", e);
-                    return ExitCode::FAILURE;
-                }
-            };
+            let server =
+                match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("Failed to set up server: {:?}", e);
+                        return ExitCode::FAILURE;
+                    }
+                };
 
-            return match quicheproxy_server(server, terminate) {
+            return match proxy_server(server, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
                     eprintln!("Fatal: {}", e);
@@ -343,7 +345,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn quicheperf_client(
+fn perf_client(
     mut client: Client,
     mut scheduler: Box<dyn MultipathScheduler>,
     tc: TestConfig,
@@ -352,6 +354,10 @@ fn quicheperf_client(
 ) -> Result<(), ClientError> {
     let mut ui = perf_ui::PerfUI::new(tc.client_sending);
     ui.new_test(&tc).ok();
+
+    let mut poll = mio::Poll::new().unwrap();
+    let mut events = mio::Events::with_capacity(1024);
+    client.register(&poll);
 
     let mut protocol: Option<Perf> = None;
 
@@ -372,9 +378,40 @@ fn quicheperf_client(
         } else {
             Duration::MAX
         };
-        client.poll(ui_timeout, protocol_timeout)?;
+        let early_data_timeout = if client.conn.is_in_early_data() {
+            Duration::ZERO
+        } else {
+            Duration::MAX
+        };
+        let conn_timeout = client.conn.timeout().unwrap_or(Duration::ZERO);
+        let timeout = min(
+            min(min(ui_timeout, protocol_timeout), early_data_timeout),
+            conn_timeout,
+        );
 
-        client.read()?;
+        let poll_start = Instant::now();
+        if let Err(e) = poll.poll(&mut events, Some(timeout)) {
+            if e.kind() != std::io::ErrorKind::Interrupted {
+                return Err(ClientError::Other(format!("Poll returned error: {}", e)));
+            }
+        }
+        let poll_duration = poll_start.elapsed();
+        let conn_timeout_expired =
+            conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
+
+        if events.is_empty() && conn_timeout_expired {
+            trace!(
+                "timed out after {:?}, events_empty={}",
+                poll_duration,
+                events.is_empty()
+            );
+            // Running this if a timeout has not actually occured has no adverse effect.
+            client.conn.on_timeout();
+        } else {
+            for event in &events {
+                client.read(event)?;
+            }
+        }
 
         if client.conn.is_closed() {
             break;
@@ -414,10 +451,7 @@ fn quicheperf_client(
     Ok(())
 }
 
-fn quicheperf_server(
-    mut server: Server,
-    terminate: Arc<AtomicBool>,
-) -> Result<(), server::ServerError> {
+fn perf_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), server::ServerError> {
     let mut events = mio::Events::with_capacity(1024);
 
     loop {
@@ -457,16 +491,23 @@ fn quicheperf_server(
     }
 }
 
-fn quicheproxy_client(
+fn proxy_client(
     mut client: Client,
     mut scheduler: Box<dyn MultipathScheduler>,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), ClientError> {
-    let mut ui = proxy_ui::ProxyUI{};
+    let ui = proxy_ui::ProxyUI {};
     // ui.new_test(&tc).ok();
 
-    // TODO: replace with proxy protocol
-    let mut protocol: Option<Proxy> = None;
+    let mut poll = mio::Poll::new().unwrap();
+    let mut events = mio::Events::with_capacity(1024);
+    client.register(&poll);
+
+    let proxy_token = 128;
+    let mut proxy_client = proxy::ProxyClient::new("mp%d".to_string(), proxy_token, &mut poll);
+
+    let mut alpn_negotiated: bool = false;
+    let mut proxy_buf: [u8; 1500] = [0x00; 1500];
 
     // Setup proxy protocol
     client.connect(&mut scheduler)?;
@@ -476,33 +517,69 @@ fn quicheproxy_client(
             client.conn.close(true, 0x1, b"user terminated").ok();
         }
 
-        // if protocol.is_some() {
+        // if alpn_negotiated {
         //     ui.update(&client.conn, &mut scheduler).ok();
         // }
 
         let ui_timeout = ui.timeout();
-        //let protocol_timeout = if let Some(protocol) = protocol.as_ref() {
-        let protocol_timeout = if false {
-            // protocol.timeout()
-            Duration::MAX
+        let early_data_timeout = if client.conn.is_in_early_data() {
+            Duration::ZERO
         } else {
             Duration::MAX
         };
-        client.poll(ui_timeout, protocol_timeout)?;
+        let conn_timeout = client.conn.timeout().unwrap_or(Duration::ZERO);
+        let timeout = min(min(ui_timeout, early_data_timeout), conn_timeout);
 
-        client.read()?;
+        let poll_start = Instant::now();
+        if let Err(e) = poll.poll(&mut events, Some(timeout)) {
+            if e.kind() != std::io::ErrorKind::Interrupted {
+                return Err(ClientError::Other(format!("Poll returned error: {}", e)));
+            }
+        }
+        let poll_duration = poll_start.elapsed();
+        let conn_timeout_expired =
+            conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
+
+        if events.is_empty() && conn_timeout_expired {
+            trace!(
+                "timed out after {:?}, events_empty={}",
+                poll_duration,
+                events.is_empty()
+            );
+            // Running this if a timeout has not actually occured has no adverse effect.
+            client.conn.on_timeout();
+        } else {
+            for event in &events {
+                let token: usize = event.token().into();
+                if token == proxy_token {
+                    if proxy_client.read_tun(event, &mut proxy_buf) > 0 {
+                        if let Err(e) = client.conn.dgram_send(&proxy_buf) {
+                            match e {
+                                quiche::Error::Done => (),
+                                quiche::Error::BufferTooShort => panic!("BufferTooShort: {}", e),
+                                quiche::Error::InvalidState => panic!("InvalidState: {}", e),
+                                _ => panic!("Unexpected dgram error: {}", e),
+                            }
+                        }
+                    }
+                } else {
+                    client.read(event)?;
+                }
+            }
+        }
 
         if client.conn.is_closed() {
             break;
         }
 
         // Create a new application protocol session once the QUIC connection is established.
-        if (client.conn.is_established() || client.conn.is_in_early_data()) && protocol.is_none() {
+        if (client.conn.is_established() || client.conn.is_in_early_data()) && !alpn_negotiated {
             let app_proto = client.conn.application_proto();
 
             if proxy::ALPN.contains(&app_proto) {
                 info!("Connection established. Selecting PROXY protocol.");
-                protocol = Some(proxy::Proxy{});
+                // protocol = Some(proxy::Proxy {});
+                alpn_negotiated = true;
             } else {
                 warn!("No ALPN matched");
             }
@@ -514,10 +591,9 @@ fn quicheproxy_client(
         client.handle_path_events();
         client.probe_paths_if_necessary()?;
 
-        // TODO
-        // if let Some(protocol) = protocol.as_mut() {
-        //     protocol.client_dispatch(&mut client.conn);
-        // }
+        if alpn_negotiated {
+            proxy_client.write_tun(&mut client.conn);
+        }
 
         client.send(&mut scheduler)?;
     }
@@ -528,13 +604,13 @@ fn quicheproxy_client(
     //     ui.print_summary(&client.conn).ok();
     // }
 
+    // If the QUIC connection was closed
+    terminate.store(true, Ordering::SeqCst);
+
     Ok(())
 }
 
-fn quicheproxy_server(
-    mut server: Server,
-    terminate: Arc<AtomicBool>,
-) -> Result<(), server::ServerError> {
+fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), server::ServerError> {
     let mut events = mio::Events::with_capacity(1024);
 
     loop {

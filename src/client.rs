@@ -6,7 +6,6 @@ use ring::rand::*;
 use slab::Slab;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::Duration;
 use std::time::Instant;
 
 #[derive(Debug)]
@@ -118,9 +117,6 @@ pub struct Client {
     pub recv_buf: [u8; 65535],
     rng: SystemRandom,
     probed_paths: usize,
-
-    poll: mio::Poll,
-    events: mio::Events,
 }
 
 impl Client {
@@ -131,7 +127,6 @@ impl Client {
     ) -> Result<Client, ClientError> {
         let mut sockets = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
         let mut src_addr_tokens = HashMap::new();
-        let poll = mio::Poll::new().unwrap();
 
         let mut addrs = Vec::new();
         for src_addr in local_addrs.into_iter() {
@@ -171,13 +166,13 @@ impl Client {
             // socket in `SocketState` returns WouldBlock. In these cases, the application should retry
             // writing to that socket as soon as it's writable again.
             // TODO: find a good solution to this problem
-            poll.registry()
-                .register(
-                    &mut sockets[token].socket,
-                    mio::Token(token),
-                    mio::Interest::READABLE, // .add(mio::Interest::WRITABLE),
-                )
-                .unwrap();
+            // poll.registry()
+            //     .register(
+            //         &mut sockets[token].socket,
+            //         mio::Token(token),
+            //         mio::Interest::READABLE, // .add(mio::Interest::WRITABLE),
+            //     )
+            //     .expect("Failed registering socket with mio");
         }
         let local_addr = *addrs.first().unwrap();
 
@@ -225,10 +220,24 @@ impl Client {
             // consider the first path as already probed, as we established the
             // connection over it.
             probed_paths: 1,
-
-            poll,
-            events: mio::Events::with_capacity(1024),
         })
+    }
+
+    pub fn register(&mut self, poll: &mio::Poll) {
+        // Disabled notifications on WRITABLE to stop poll.poll being waken up unnecessarily.
+        // This will lead to problems under heavy load, more specifically if writing to the UDP
+        // socket in `SocketState` returns WouldBlock. In these cases, the application should retry
+        // writing to that socket as soon as it's writable again.
+        // TODO: find a good solution to this problem
+        for (token, socket) in self.sockets.iter_mut() {
+            poll.registry()
+                .register(
+                    &mut socket.socket,
+                    mio::Token(token),
+                    mio::Interest::READABLE, // .add(mio::Interest::WRITABLE),
+                )
+                .expect("Failed registering socket with mio");
+        }
     }
 
     pub fn connect(
@@ -249,113 +258,111 @@ impl Client {
         Ok(())
     }
 
-    pub fn poll(
-        &mut self,
-        ui_timeout: Duration,
-        protocol_timeout: Duration,
-    ) -> Result<(), ClientError> {
-        let mut conn_timeout_expired = false;
-        let mut poll_duration = Duration::ZERO;
+    // pub fn poll(
+    //     &mut self,
+    //     ui_timeout: Duration,
+    //     protocol_timeout: Duration,
+    // ) -> Result<(), ClientError> {
+    //     let mut conn_timeout_expired = false;
+    //     let mut poll_duration = Duration::ZERO;
 
-        if !self.conn.is_in_early_data() || protocol_timeout < Duration::MAX {
-            let conn_timeout = self.conn.timeout().unwrap_or(Duration::ZERO);
-            let timeout = std::cmp::min(std::cmp::min(conn_timeout, ui_timeout), protocol_timeout);
+    //     if !self.conn.is_in_early_data() || protocol_timeout < Duration::MAX {
+    //         let conn_timeout = self.conn.timeout().unwrap_or(Duration::ZERO);
+    //         let timeout = std::cmp::min(std::cmp::min(conn_timeout, ui_timeout), protocol_timeout);
 
-            let poll_start = Instant::now();
-            if let Err(e) = self.poll.poll(&mut self.events, Some(timeout)) {
-                if e.kind() != std::io::ErrorKind::Interrupted {
-                    return Err(ClientError::Other(format!("Poll returned error: {}", e)));
-                }
-            }
-            poll_duration = poll_start.elapsed();
+    //         let poll_start = Instant::now();
+    //         if let Err(e) = self.poll.poll(&mut self.events, Some(timeout)) {
+    //             if e.kind() != std::io::ErrorKind::Interrupted {
+    //                 return Err(ClientError::Other(format!("Poll returned error: {}", e)));
+    //             }
+    //         }
+    //         poll_duration = poll_start.elapsed();
 
-            conn_timeout_expired =
-                conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
+    //         conn_timeout_expired =
+    //             conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
 
-            // let (readable, writable) = self.events.iter().fold(
-            //     (false, false),
-            //     |(r, w), e| (r || e.is_readable(), w || e.is_writable()));
+    //         // let (readable, writable) = self.events.iter().fold(
+    //         //     (false, false),
+    //         //     |(r, w), e| (r || e.is_readable(), w || e.is_writable()));
 
-            log::trace!(
-                "timeout (ms) {}, slept {}, ev={} (r={}, w={}): conn={}, ui={}, protocol={}",
-                timeout.as_millis(),
-                poll_duration.as_millis(),
-                !self.events.is_empty(),
-                "?",
-                "?",
-                // readable,
-                // writable,
-                conn_timeout.as_millis(),
-                ui_timeout.as_millis(),
-                protocol_timeout.as_millis(),
-            );
-        }
+    //         log::trace!(
+    //             "timeout (ms) {}, slept {}, ev={} (r={}, w={}): conn={}, ui={}, protocol={}",
+    //             timeout.as_millis(),
+    //             poll_duration.as_millis(),
+    //             !self.events.is_empty(),
+    //             "?",
+    //             "?",
+    //             // readable,
+    //             // writable,
+    //             conn_timeout.as_millis(),
+    //             ui_timeout.as_millis(),
+    //             protocol_timeout.as_millis(),
+    //         );
+    //     }
 
-        if self.events.is_empty() && conn_timeout_expired {
-            trace!(
-                "timed out after {:?}, events_empty={}",
-                poll_duration,
-                self.events.is_empty()
-            );
-            // Running this if a timeout has not actually occured has no adverse effect.
-            self.conn.on_timeout();
-        }
+    //     if self.events.is_empty() && conn_timeout_expired {
+    //         trace!(
+    //             "timed out after {:?}, events_empty={}",
+    //             poll_duration,
+    //             self.events.is_empty()
+    //         );
+    //         // Running this if a timeout has not actually occured has no adverse effect.
+    //         self.conn.on_timeout();
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     /// Read incoming UDP packets from the socket and feed them to quiche,
     /// until there are no more packets to read.
-    pub fn read(&mut self) -> Result<(), ClientError> {
-        for event in &self.events {
-            let token = event.token().into();
-            let socket = &mut self.sockets[token];
+    pub fn read(&mut self, event: &mio::event::Event) -> Result<(), ClientError> {
+        let token = event.token().into();
+        let socket = &mut self.sockets[token];
 
-            // if event.is_writable() && socket.send_pending() {
-            if socket.send_pending() {
-                socket.try_send()?;
-            }
+        // if event.is_writable() && socket.send_pending() {
+        if socket.send_pending() {
+            socket.try_send()?;
+        }
 
-            if event.is_readable() {
-                let local_addr = socket.socket.local_addr().unwrap();
-                'read: loop {
-                    let (len, from) = match socket.socket.recv_from(&mut self.recv_buf) {
-                        Ok(v) => v,
+        if event.is_readable() {
+            let local_addr = socket.socket.local_addr().unwrap();
+            'read: loop {
+                let (len, from) = match socket.socket.recv_from(&mut self.recv_buf) {
+                    Ok(v) => v,
 
-                        Err(e) => {
-                            // There are no more UDP packets to read on this socket.
-                            // Process subsequent events.
-                            if e.kind() == std::io::ErrorKind::WouldBlock {
-                                trace!("{}: recv() would block", local_addr);
-                                break 'read;
-                            }
-
-                            return Err(ClientError::IOFail(format!(
-                                "{}: recv() failed: {:?}",
-                                local_addr, e
-                            )));
+                    Err(e) => {
+                        // There are no more UDP packets to read on this socket.
+                        // Process subsequent events.
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            trace!("{}: recv() would block", local_addr);
+                            break 'read;
                         }
-                    };
 
-                    trace!("{}->{}: got {} bytes", from, local_addr, len);
+                        return Err(ClientError::IOFail(format!(
+                            "{}: recv() failed: {:?}",
+                            local_addr, e
+                        )));
+                    }
+                };
 
-                    let recv_info = quiche::RecvInfo {
-                        to: local_addr,
-                        from,
-                    };
+                trace!("{}->{}: got {} bytes", from, local_addr, len);
 
-                    // Process potentially coalesced packets.
-                    let read = match self.conn.recv(&mut self.recv_buf[..len], recv_info) {
-                        Ok(v) => v,
+                let recv_info = quiche::RecvInfo {
+                    to: local_addr,
+                    from,
+                };
 
-                        Err(e) => {
-                            error!("{}: recv failed: {:?}", local_addr, e);
-                            continue 'read;
-                        }
-                    };
+                // Process potentially coalesced packets.
+                let read = match self.conn.recv(&mut self.recv_buf[..len], recv_info) {
+                    Ok(v) => v,
 
-                    trace!("{}: processed {} bytes", local_addr, read);
-                }
+                    Err(e) => {
+                        error!("{}: recv failed: {:?}", local_addr, e);
+                        continue 'read;
+                    }
+                };
+
+                trace!("{}: processed {} bytes", local_addr, read);
             }
         }
 

@@ -154,7 +154,7 @@ impl Client {
                 info!("Connection established. Selecting PERF protocol.");
                 let perf = crate::perf::Perf::new_with_password(self.password.clone());
                 self.protocol = Some(Protocols::Perf(perf));
-            } else if crate::proxy::ALPN.contains(&app_proto) { 
+            } else if crate::proxy::ALPN.contains(&app_proto) {
                 info!("Connection established. Selecting PROXY protocol.");
                 self.protocol = Some(Protocols::Proxy(crate::proxy::Proxy {}));
             } else {
