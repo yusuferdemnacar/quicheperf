@@ -153,15 +153,12 @@ impl Client {
                 self.protocol = Some(Protocols::Perf(perf));
             } else if crate::proxy::ALPN.contains(&app_proto) {
                 info!("Connection established. Selecting PROXY protocol.");
-                self.protocol = Some(Protocols::Proxy(crate::proxy::Proxy::new(
-                    "mp0".to_string(),
-                )));
+                // self.protocol = Some(Protocols::Proxy(crate::proxy::Proxy::new(
+                //     "mp0".to_string(),
+                // )));
+                self.protocol = Some(Protocols::Proxy(()));
             } else {
-                warn!(
-                    "ALPN did not match {:?}: {:?}",
-                    crate::perf::ALPN,
-                    app_proto
-                );
+                warn!("ALPN did not match");
                 self.conn.close(false, 0x1, b"No ALPN match").ok();
             }
         }
@@ -172,7 +169,7 @@ impl Client {
         if let Some(protocol) = self.protocol.as_mut() {
             match protocol {
                 Protocols::Perf(perf) => perf.server_dispatch(&mut self.conn),
-                Protocols::Proxy(proxy) => proxy.write_tun(&mut self.conn),
+                Protocols::Proxy(()) => (), //proxy.write_tun(&mut self.conn),
             };
         }
 

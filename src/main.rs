@@ -404,8 +404,9 @@ fn perf_client(
             }
         }
         let poll_duration = poll_start.elapsed();
-        let conn_timeout_expired = events.is_empty()
-            && conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
+        let conn_timeout_expired =
+            events.is_empty() &&
+            conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
 
         if conn_timeout_expired {
             // Running this if a timeout has not actually occured has no adverse effect.
@@ -494,8 +495,9 @@ fn perf_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), ser
             }
         }
         let poll_duration = poll_start.elapsed();
-        let conn_timeout_expired = events.is_empty()
-            && timeout.map_or(false, |t| {
+        let conn_timeout_expired = 
+            events.is_empty() &&
+            timeout.map_or(false, |t| {
                 t.saturating_sub(poll_duration) == std::time::Duration::ZERO
             });
         if conn_timeout_expired {
@@ -583,8 +585,9 @@ fn proxy_client(
             }
         }
         let poll_duration = poll_start.elapsed();
-        let conn_timeout_expired = events.is_empty()
-            && conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
+        let conn_timeout_expired =
+            events.is_empty() && 
+            conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
         if conn_timeout_expired {
             // Running this if a timeout has not actually occured has no adverse effect.
             client.conn.on_timeout();
@@ -604,12 +607,7 @@ fn proxy_client(
             if token == proxy_token {
                 let written = proxy_client.read_tun(&mut proxy_buf);
                 if written > 0 {
-                    info!(
-                        "Sending dgram with {}B, max={:?}B, enabled={}",
-                        written,
-                        client.conn.dgram_max_writable_len(),
-                        client.conn.dgram_enabled()
-                    );
+                    info!("Sending dgram with {}B, max={:?}B", written, client.conn.dgram_max_writable_len());
                     if let Err(e) = client.conn.dgram_send(&proxy_buf[..written]) {
                         match e {
                             quiche::Error::Done => (),
@@ -687,11 +685,14 @@ fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), se
         }
 
         // server.poll(&mut events)?;
-        let timeout = server
+        let mut timeout = server
             .clients
             .values()
             .filter_map(|c| c.conn.timeout())
             .min();
+        if let Some(t) = timeout {
+            timeout = Some(min(Duration::from_secs(5), t));
+        }
         let poll_start = std::time::Instant::now();
         if let Err(e) = poll.poll(&mut events, timeout) {
             if e.kind() != std::io::ErrorKind::Interrupted {
@@ -700,8 +701,9 @@ fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), se
             }
         }
         let poll_duration = poll_start.elapsed();
-        let conn_timeout_expired = events.is_empty()
-            && timeout.map_or(false, |t| {
+        let conn_timeout_expired =
+            events.is_empty() &&
+            timeout.map_or(false, |t| {
                 t.saturating_sub(poll_duration) == std::time::Duration::ZERO
             });
         if conn_timeout_expired {
@@ -721,15 +723,11 @@ fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), se
             let token = event.token().into();
             if token == proxy_token {
                 let written = proxy.read_tun(&mut proxy_buf);
-                if written > 0 {
+                trace!("Read {}B from tun", written);
+                if  written > 0 {
                     // TODO: sents the packet to all connected clients
                     for (_, client) in server.clients.iter_mut() {
-                        info!(
-                            "Sending dgram with {}B, max={:?}B, enabled={}",
-                            written,
-                            client.conn.dgram_max_writable_len(),
-                            client.conn.dgram_enabled()
-                        );
+                        info!("Sending dgram with {}B, max={:?}B", written, client.conn.dgram_max_writable_len());
                         if let Err(e) = client.conn.dgram_send(&proxy_buf[..written]) {
                             match e {
                                 quiche::Error::Done => (),
@@ -756,6 +754,10 @@ fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), se
                             continue;
                         }
                     }
+                }
+
+                for (_, client) in server.clients.iter_mut() {
+                    proxy.write_tun(&mut client.conn);
                 }
             }
         }

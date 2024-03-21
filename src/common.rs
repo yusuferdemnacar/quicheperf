@@ -28,7 +28,8 @@ pub struct TestMetadata {
 
 pub enum Protocols {
     Perf(crate::perf::Perf),
-    Proxy(crate::proxy::Proxy),
+    // Proxy(crate::proxy::Proxy),
+    Proxy(()),
 }
 
 /// Set SO_TXTIME socket option.

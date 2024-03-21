@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Read, Write};
 
 use riptun::{Queue, Tun};
 
@@ -13,7 +13,7 @@ impl Proxy {
         let mut tun = Tun::new(&name, 1)
             .map_err(|e| panic!("Failed creating tun {}: {}", name, e))
             .unwrap();
-        info!("[INFO] => Created new virtual device: {}", tun.name());
+        info!("Opened {}", tun.name());
 
         let queue = tun.drain(..).next().unwrap();
         queue.set_non_blocking(true).unwrap();
@@ -22,6 +22,7 @@ impl Proxy {
     }
 
     pub fn register(&mut self, token: usize, poll: &mut mio::Poll) {
+        debug!("Registered tun with token {} with mio", token);
         poll.registry()
             .register(&mut self.queue, mio::Token(token), mio::Interest::READABLE)
             .unwrap();
@@ -43,7 +44,7 @@ impl Proxy {
 
     pub fn write_tun(&mut self, conn: &mut quiche::Connection) {
         while let Ok(data) = conn.dgram_recv_vec() {
-            trace!("{} received {} bytes", conn.trace_id(), data.len());
+            trace!("{} received {} bytes from dgram", conn.trace_id(), data.len());
 
             self.queue.write(&data).unwrap();
         }
