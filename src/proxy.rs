@@ -10,7 +10,9 @@ pub struct Proxy {
 
 impl Proxy {
     pub fn new(name: String) -> Proxy {
-        let mut tun = Tun::new(&name, 1).unwrap();
+        let mut tun = Tun::new(&name, 1)
+            .map_err(|e| panic!("Failed creating tun {}: {}", name, e))
+            .unwrap();
         info!("[INFO] => Created new virtual device: {}", tun.name());
 
         let queue = tun.drain(..).next().unwrap();

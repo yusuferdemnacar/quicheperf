@@ -65,9 +65,9 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
         }
     };
 
-    config.set_application_protos(&perf::ALPN).unwrap();
+    // config.set_application_protos(&perf::ALPN).unwrap();
 
-    config.set_max_idle_timeout(30_000); // in ms
+    config.set_max_idle_timeout(300_000); // in ms
     config.set_max_recv_udp_payload_size(common::MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(common::MAX_DATAGRAM_SIZE);
     config.set_initial_max_data(args.max_data);
@@ -105,7 +105,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     config.enable_hystart(args.hystart);
     config.enable_pacing(true);
 
-    config.enable_dgram(false, 1000, 1000);
+    config.enable_dgram(true, 1000, 1000);
 
     config.set_max_connection_window(25_165_824);
     config.set_max_stream_window(16_777_216);
@@ -238,6 +238,8 @@ fn main() -> ExitCode {
                 bitrate_target: bitrate_target,
             };
 
+            quiche_config.set_application_protos(&perf::ALPN).unwrap();
+
             let client = client::Client::new(local_addrs, peer_addrs, quiche_config).unwrap();
 
             return match perf_client(client, scheduler, tc, psu, terminate) {
@@ -265,6 +267,8 @@ fn main() -> ExitCode {
                 eprintln!("Error loading private key from {:?}: {}", key, e);
                 return ExitCode::FAILURE;
             };
+
+            quiche_config.set_application_protos(&perf::ALPN).unwrap();
 
             let server =
                 match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
@@ -297,6 +301,8 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
 
+            quiche_config.set_application_protos(&proxy::ALPN).unwrap();
+
             let client = client::Client::new(local_addrs, peer_addrs, quiche_config).unwrap();
 
             return match proxy_client(client, scheduler, terminate) {
@@ -320,6 +326,8 @@ fn main() -> ExitCode {
                 eprintln!("Error loading private key from {:?}: {}", key, e);
                 return ExitCode::FAILURE;
             };
+
+            quiche_config.set_application_protos(&proxy::ALPN).unwrap();
 
             let server =
                 match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
@@ -396,18 +404,24 @@ fn perf_client(
             }
         }
         let poll_duration = poll_start.elapsed();
-        let conn_timeout_expired =
-            conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
+        let conn_timeout_expired = events.is_empty()
+            && conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
 
-        if events.is_empty() && conn_timeout_expired {
-            trace!(
-                "timed out after {:?}, events_empty={}",
-                poll_duration,
-                events.is_empty()
-            );
+        if conn_timeout_expired {
             // Running this if a timeout has not actually occured has no adverse effect.
             client.conn.on_timeout();
         }
+
+        log::trace!(
+            "timeout (ms) {}, slept {}, expired={}, early={}, conn={}, ui={}, perf={}",
+            timeout.as_millis(),
+            poll_duration.as_millis(),
+            conn_timeout_expired,
+            early_data_timeout.as_millis(),
+            conn_timeout.as_millis(),
+            ui_timeout.as_millis(),
+            protocol_timeout.as_millis(),
+        );
 
         for event in &events {
             client.read(event)?;
@@ -454,6 +468,7 @@ fn perf_client(
 fn perf_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), server::ServerError> {
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
+    server.register(&poll);
 
     loop {
         if terminate.load(Ordering::SeqCst) {
@@ -479,20 +494,22 @@ fn perf_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), ser
             }
         }
         let poll_duration = poll_start.elapsed();
-        let conn_timeout_expired = timeout.map_or(false, |t| {
-            t.saturating_sub(poll_duration) == std::time::Duration::ZERO
-        });
-        if events.is_empty() && conn_timeout_expired {
-            trace!(
-                "timed out after {} ms, events_empty={}",
-                poll_duration.as_millis(),
-                events.is_empty()
-            );
+        let conn_timeout_expired = events.is_empty()
+            && timeout.map_or(false, |t| {
+                t.saturating_sub(poll_duration) == std::time::Duration::ZERO
+            });
+        if conn_timeout_expired {
             server
                 .clients
                 .values_mut()
                 .for_each(|c| c.conn.on_timeout());
         }
+        log::trace!(
+            "timeout {:?}, slept {}, expired={}",
+            timeout,
+            poll_duration.as_millis(),
+            conn_timeout_expired,
+        );
 
         for event in events.iter() {
             let token = event.token().into();
@@ -533,7 +550,7 @@ fn proxy_client(
 
     let proxy_token = 128;
     let mut proxy_buf: [u8; 1500] = [0x00; 1500];
-    let mut proxy_client = proxy::Proxy::new("mp%d".to_string());
+    let mut proxy_client = proxy::Proxy::new("mp0".to_string());
     proxy_client.register(proxy_token, &mut poll);
 
     let mut alpn_negotiated: bool = false;
@@ -566,27 +583,38 @@ fn proxy_client(
             }
         }
         let poll_duration = poll_start.elapsed();
-        let conn_timeout_expired =
-            conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
-
-        if events.is_empty() && conn_timeout_expired {
-            trace!(
-                "timed out after {:?}, events_empty={}",
-                poll_duration,
-                events.is_empty()
-            );
+        let conn_timeout_expired = events.is_empty()
+            && conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
+        if conn_timeout_expired {
             // Running this if a timeout has not actually occured has no adverse effect.
             client.conn.on_timeout();
         }
+        log::trace!(
+            "timeout (ms) {}, slept {}, expired={}, early={}, conn={}, ui={}",
+            timeout.as_millis(),
+            poll_duration.as_millis(),
+            conn_timeout_expired,
+            early_data_timeout.as_millis(),
+            conn_timeout.as_millis(),
+            ui_timeout.as_millis(),
+        );
+
         for event in &events {
             let token: usize = event.token().into();
             if token == proxy_token {
-                if proxy_client.read_tun(&mut proxy_buf) > 0 {
-                    if let Err(e) = client.conn.dgram_send(&proxy_buf) {
+                let written = proxy_client.read_tun(&mut proxy_buf);
+                if written > 0 {
+                    info!(
+                        "Sending dgram with {}B, max={:?}B, enabled={}",
+                        written,
+                        client.conn.dgram_max_writable_len(),
+                        client.conn.dgram_enabled()
+                    );
+                    if let Err(e) = client.conn.dgram_send(&proxy_buf[..written]) {
                         match e {
                             quiche::Error::Done => (),
-                            quiche::Error::BufferTooShort => panic!("BufferTooShort: {}", e),
-                            quiche::Error::InvalidState => panic!("InvalidState: {}", e),
+                            quiche::Error::BufferTooShort => error!("Trying dgram_send but {}", e),
+                            quiche::Error::InvalidState => error!("Trying dgram_send but {}", e),
                             _ => panic!("Unexpected dgram error: {}", e),
                         }
                     }
@@ -608,7 +636,8 @@ fn proxy_client(
                 // protocol = Some(proxy::Proxy {});
                 alpn_negotiated = true;
             } else {
-                warn!("No ALPN matched");
+                warn!("ALPN did not match");
+                client.conn.close(false, 0x1, b"No ALPN match").ok();
             }
         }
 
@@ -644,7 +673,7 @@ fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), se
 
     let proxy_token = 128;
     let mut proxy_buf: [u8; 1500] = [0x00; 1500];
-    let mut proxy = proxy::Proxy::new("mp%d".to_string());
+    let mut proxy = proxy::Proxy::new("mp0".to_string());
     proxy.register(proxy_token, &mut poll);
 
     loop {
@@ -671,32 +700,41 @@ fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), se
             }
         }
         let poll_duration = poll_start.elapsed();
-        let conn_timeout_expired = timeout.map_or(false, |t| {
-            t.saturating_sub(poll_duration) == std::time::Duration::ZERO
-        });
-        if events.is_empty() && conn_timeout_expired {
-            trace!(
-                "timed out after {} ms, events_empty={}",
-                poll_duration.as_millis(),
-                events.is_empty()
-            );
+        let conn_timeout_expired = events.is_empty()
+            && timeout.map_or(false, |t| {
+                t.saturating_sub(poll_duration) == std::time::Duration::ZERO
+            });
+        if conn_timeout_expired {
             server
                 .clients
                 .values_mut()
                 .for_each(|c| c.conn.on_timeout());
         }
+        log::trace!(
+            "timeout {:?}, slept {}, expired={}",
+            timeout,
+            poll_duration.as_millis(),
+            conn_timeout_expired,
+        );
 
         for event in events.iter() {
             let token = event.token().into();
             if token == proxy_token {
-                if proxy.read_tun(&mut proxy_buf) > 0 {
+                let written = proxy.read_tun(&mut proxy_buf);
+                if written > 0 {
                     // TODO: sents the packet to all connected clients
                     for (_, client) in server.clients.iter_mut() {
-                        if let Err(e) = client.conn.dgram_send(&proxy_buf) {
+                        info!(
+                            "Sending dgram with {}B, max={:?}B, enabled={}",
+                            written,
+                            client.conn.dgram_max_writable_len(),
+                            client.conn.dgram_enabled()
+                        );
+                        if let Err(e) = client.conn.dgram_send(&proxy_buf[..written]) {
                             match e {
                                 quiche::Error::Done => (),
-                                quiche::Error::BufferTooShort => panic!("BufferTooShort: {}", e),
-                                quiche::Error::InvalidState => panic!("InvalidState: {}", e),
+                                quiche::Error::BufferTooShort => panic!("dgram_send: {}", e),
+                                quiche::Error::InvalidState => panic!("dgram_send: {}", e),
                                 _ => panic!("Unexpected dgram error: {}", e),
                             }
                         }

@@ -154,7 +154,7 @@ impl Client {
             } else if crate::proxy::ALPN.contains(&app_proto) {
                 info!("Connection established. Selecting PROXY protocol.");
                 self.protocol = Some(Protocols::Proxy(crate::proxy::Proxy::new(
-                    "mp%d".to_string(),
+                    "mp0".to_string(),
                 )));
             } else {
                 warn!(
@@ -307,7 +307,6 @@ impl Server {
 
         let mut addrs = Vec::new();
         for src_addr in local_addrs {
-            println!("listening on {:?}", src_addr);
             let socket = match mio::net::UdpSocket::bind(src_addr) {
                 Ok(v) => v,
                 Err(e) => {
@@ -344,6 +343,7 @@ impl Server {
             addrs.push(local_addr);
 
             info!("listening on {:}", local_addr);
+            println!("listening on {:?}", src_addr);
         }
 
         let rng = SystemRandom::new();
