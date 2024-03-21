@@ -407,10 +407,10 @@ fn perf_client(
             );
             // Running this if a timeout has not actually occured has no adverse effect.
             client.conn.on_timeout();
-        } else {
-            for event in &events {
-                client.read(event)?;
-            }
+        }
+
+        for event in &events {
+            client.read(event)?;
         }
 
         if client.conn.is_closed() {
@@ -452,6 +452,7 @@ fn perf_client(
 }
 
 fn perf_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), server::ServerError> {
+    let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
 
     loop {
@@ -464,7 +465,34 @@ fn perf_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), ser
             return Ok(());
         }
 
-        server.poll(&mut events)?;
+        //server.poll(&mut events)?;
+        let timeout = server
+            .clients
+            .values()
+            .filter_map(|c| c.conn.timeout())
+            .min();
+        let poll_start = std::time::Instant::now();
+        if let Err(e) = poll.poll(&mut events, timeout) {
+            if e.kind() != std::io::ErrorKind::Interrupted {
+                error!("Poll returned error: {}", e);
+                // break;
+            }
+        }
+        let poll_duration = poll_start.elapsed();
+        let conn_timeout_expired = timeout.map_or(false, |t| {
+            t.saturating_sub(poll_duration) == std::time::Duration::ZERO
+        });
+        if events.is_empty() && conn_timeout_expired {
+            trace!(
+                "timed out after {} ms, events_empty={}",
+                poll_duration.as_millis(),
+                events.is_empty()
+            );
+            server
+                .clients
+                .values_mut()
+                .for_each(|c| c.conn.on_timeout());
+        }
 
         for event in events.iter() {
             let token = event.token().into();
@@ -504,10 +532,11 @@ fn proxy_client(
     client.register(&poll);
 
     let proxy_token = 128;
-    let mut proxy_client = proxy::ProxyClient::new("mp%d".to_string(), proxy_token, &mut poll);
+    let mut proxy_buf: [u8; 1500] = [0x00; 1500];
+    let mut proxy_client = proxy::Proxy::new("mp%d".to_string());
+    proxy_client.register(proxy_token, &mut poll);
 
     let mut alpn_negotiated: bool = false;
-    let mut proxy_buf: [u8; 1500] = [0x00; 1500];
 
     // Setup proxy protocol
     client.connect(&mut scheduler)?;
@@ -548,23 +577,22 @@ fn proxy_client(
             );
             // Running this if a timeout has not actually occured has no adverse effect.
             client.conn.on_timeout();
-        } else {
-            for event in &events {
-                let token: usize = event.token().into();
-                if token == proxy_token {
-                    if proxy_client.read_tun(event, &mut proxy_buf) > 0 {
-                        if let Err(e) = client.conn.dgram_send(&proxy_buf) {
-                            match e {
-                                quiche::Error::Done => (),
-                                quiche::Error::BufferTooShort => panic!("BufferTooShort: {}", e),
-                                quiche::Error::InvalidState => panic!("InvalidState: {}", e),
-                                _ => panic!("Unexpected dgram error: {}", e),
-                            }
+        }
+        for event in &events {
+            let token: usize = event.token().into();
+            if token == proxy_token {
+                if proxy_client.read_tun(&mut proxy_buf) > 0 {
+                    if let Err(e) = client.conn.dgram_send(&proxy_buf) {
+                        match e {
+                            quiche::Error::Done => (),
+                            quiche::Error::BufferTooShort => panic!("BufferTooShort: {}", e),
+                            quiche::Error::InvalidState => panic!("InvalidState: {}", e),
+                            _ => panic!("Unexpected dgram error: {}", e),
                         }
                     }
-                } else {
-                    client.read(event)?;
                 }
+            } else {
+                client.read(event)?;
             }
         }
 
@@ -575,7 +603,6 @@ fn proxy_client(
         // Create a new application protocol session once the QUIC connection is established.
         if (client.conn.is_established() || client.conn.is_in_early_data()) && !alpn_negotiated {
             let app_proto = client.conn.application_proto();
-
             if proxy::ALPN.contains(&app_proto) {
                 info!("Connection established. Selecting PROXY protocol.");
                 // protocol = Some(proxy::Proxy {});
@@ -611,7 +638,14 @@ fn proxy_client(
 }
 
 fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), server::ServerError> {
+    let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
+    server.register(&poll);
+
+    let proxy_token = 128;
+    let mut proxy_buf: [u8; 1500] = [0x00; 1500];
+    let mut proxy = proxy::Proxy::new("mp%d".to_string());
+    proxy.register(proxy_token, &mut poll);
 
     loop {
         if terminate.load(Ordering::SeqCst) {
@@ -623,24 +657,66 @@ fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), se
             return Ok(());
         }
 
-        server.poll(&mut events)?;
+        // server.poll(&mut events)?;
+        let timeout = server
+            .clients
+            .values()
+            .filter_map(|c| c.conn.timeout())
+            .min();
+        let poll_start = std::time::Instant::now();
+        if let Err(e) = poll.poll(&mut events, timeout) {
+            if e.kind() != std::io::ErrorKind::Interrupted {
+                error!("Poll returned error: {}", e);
+                // break;
+            }
+        }
+        let poll_duration = poll_start.elapsed();
+        let conn_timeout_expired = timeout.map_or(false, |t| {
+            t.saturating_sub(poll_duration) == std::time::Duration::ZERO
+        });
+        if events.is_empty() && conn_timeout_expired {
+            trace!(
+                "timed out after {} ms, events_empty={}",
+                poll_duration.as_millis(),
+                events.is_empty()
+            );
+            server
+                .clients
+                .values_mut()
+                .for_each(|c| c.conn.on_timeout());
+        }
 
         for event in events.iter() {
             let token = event.token().into();
-
-            // Writable mio notifications disabled for now
-            // if event.is_writable() {
-            server.on_writable(token)?;
-            // }
-            if let Err(e) = server.on_readable(token) {
-                match e {
-                    server::ServerError::FatalSocket(e) => {
-                        error!("{}", e);
-                        break;
+            if token == proxy_token {
+                if proxy.read_tun(&mut proxy_buf) > 0 {
+                    // TODO: sents the packet to all connected clients
+                    for (_, client) in server.clients.iter_mut() {
+                        if let Err(e) = client.conn.dgram_send(&proxy_buf) {
+                            match e {
+                                quiche::Error::Done => (),
+                                quiche::Error::BufferTooShort => panic!("BufferTooShort: {}", e),
+                                quiche::Error::InvalidState => panic!("InvalidState: {}", e),
+                                _ => panic!("Unexpected dgram error: {}", e),
+                            }
+                        }
                     }
-                    server::ServerError::Unexpected(e) => {
-                        trace!("{}", e);
-                        continue;
+                }
+            } else {
+                // Writable mio notifications disabled for now
+                // if event.is_writable() {
+                server.on_writable(token)?;
+                // }
+                if let Err(e) = server.on_readable(token) {
+                    match e {
+                        server::ServerError::FatalSocket(e) => {
+                            error!("{}", e);
+                            break;
+                        }
+                        server::ServerError::Unexpected(e) => {
+                            trace!("{}", e);
+                            continue;
+                        }
                     }
                 }
             }

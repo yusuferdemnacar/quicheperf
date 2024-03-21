@@ -121,10 +121,7 @@ pub struct Client {
     client_id: ClientId,
     protocol: Option<Protocols>,
     password: Option<String>,
-    // partial_requests: std::collections::HashMap<u64, PartialRequest>,
-    // partial_responses: std::collections::HashMap<u64, PartialResponse>,
     max_datagram_size: usize,
-    // loss_rate: f64,
     max_send_burst: usize,
 }
 
@@ -156,7 +153,9 @@ impl Client {
                 self.protocol = Some(Protocols::Perf(perf));
             } else if crate::proxy::ALPN.contains(&app_proto) {
                 info!("Connection established. Selecting PROXY protocol.");
-                self.protocol = Some(Protocols::Proxy(crate::proxy::Proxy {}));
+                self.protocol = Some(Protocols::Proxy(crate::proxy::Proxy::new(
+                    "mp%d".to_string(),
+                )));
             } else {
                 warn!(
                     "ALPN did not match {:?}: {:?}",
@@ -173,7 +172,7 @@ impl Client {
         if let Some(protocol) = self.protocol.as_mut() {
             match protocol {
                 Protocols::Perf(perf) => perf.server_dispatch(&mut self.conn),
-                Protocols::Proxy(proxy) => todo!(),
+                Protocols::Proxy(proxy) => proxy.write_tun(&mut self.conn),
             };
         }
 
@@ -279,14 +278,13 @@ pub struct Server {
 
     keylog: Option<std::fs::File>,
 
-    poll: mio::Poll,
-
     rng: SystemRandom,
     conn_id_seed: ring::hmac::Key,
 
     next_client_id: u64,
     clients_ids: ClientIdMap,
     pub clients: HashMap<u64, Client>,
+
     buf: [u8; MAX_BUF_SIZE],
     out: [u8; MAX_BUF_SIZE],
 }
@@ -298,7 +296,6 @@ impl Server {
         config: quiche::Config,
         scheduler: Box<dyn MultipathScheduler>,
     ) -> Result<Server, ServerError> {
-        let poll = mio::Poll::new().unwrap();
         let mut sockets: Slab<SocketState> =
             Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
         let mut src_addr_tokens = HashMap::new();
@@ -346,15 +343,6 @@ impl Server {
             src_addr_tokens.insert(local_addr, token);
             addrs.push(local_addr);
 
-            // Disabled WRITABLE for now. See client.rs for details on the implications.
-            poll.registry()
-                .register(
-                    &mut sockets[token].socket,
-                    mio::Token(token),
-                    mio::Interest::READABLE, // .add(mio::Interest::WRITABLE),
-                )
-                .unwrap();
-
             info!("listening on {:}", local_addr);
         }
 
@@ -371,8 +359,6 @@ impl Server {
 
             keylog: configure_keylog(),
 
-            poll,
-
             conn_id_seed,
             rng,
 
@@ -384,52 +370,63 @@ impl Server {
         })
     }
 
-    pub fn poll(&mut self, events: &mut mio::Events) -> Result<(), ServerError> {
-        // Find the shorter timeout from all the active connections.
-        // TODO: use event loop that properly supports timers
-        let timeout = self.clients.values().filter_map(|c| c.conn.timeout()).min();
-
-        // let send_pending = self.sockets.iter().fold(false, |acc, (_, s)| acc || s.send_pending());
-
-        let poll_start = std::time::Instant::now();
-        if let Err(e) = self.poll.poll(events, timeout) {
-            if e.kind() != std::io::ErrorKind::Interrupted {
-                return Err(ServerError::Unexpected(format!(
-                    "Poll returned error: {}",
-                    e
-                )));
-            }
+    pub fn register(&mut self, poll: &mio::Poll) {
+        for (token, socket) in self.sockets.iter_mut() {
+            // Disabled WRITABLE for now. See client.rs for details on the implications.
+            poll.registry()
+                .register(
+                    &mut socket.socket,
+                    mio::Token(token),
+                    mio::Interest::READABLE, // .add(mio::Interest::WRITABLE),
+                )
+                .unwrap();
         }
-
-        let poll_duration = poll_start.elapsed();
-        // let (readable, writable) = events.iter().fold(
-        //     (false, false),
-        //     |(readable, writable), e| (readable || e.is_readable(), writable || e.is_writable()));
-
-        trace!(
-            "timeout {:?}, slept {} ms, ev={} (r={}, w={})",
-            timeout,
-            poll_duration.as_millis(),
-            !events.is_empty(),
-            "?", // readable,
-            "?", // writable,
-        );
-
-        let conn_timeout_expired = timeout.map_or(false, |t| {
-            t.saturating_sub(poll_duration) == std::time::Duration::ZERO
-        });
-
-        if events.is_empty() && conn_timeout_expired {
-            trace!(
-                "timed out after {} ms, events_empty={}",
-                poll_duration.as_millis(),
-                events.is_empty()
-            );
-            self.clients.values_mut().for_each(|c| c.conn.on_timeout());
-        }
-
-        Ok(())
     }
+
+    // pub fn poll(&mut self, events: &mut mio::Events) -> Result<(), ServerError> {
+    //     // Find the shorter timeout from all the active connections.
+    //     let timeout = self.clients.values().filter_map(|c| c.conn.timeout()).min();
+
+    //     // let send_pending = self.sockets.iter().fold(false, |acc, (_, s)| acc || s.send_pending());
+
+    //     let poll_start = std::time::Instant::now();
+    //     if let Err(e) = self.poll.poll(events, timeout) {
+    //         if e.kind() != std::io::ErrorKind::Interrupted {
+    //             return Err(ServerError::Unexpected(format!(
+    //                 "Poll returned error: {}",
+    //                 e
+    //             )));
+    //         }
+    //     }
+    //     let poll_duration = poll_start.elapsed();
+    //     // let (readable, writable) = events.iter().fold(
+    //     //     (false, false),
+    //     //     |(readable, writable), e| (readable || e.is_readable(), writable || e.is_writable()));
+
+    //     trace!(
+    //         "timeout {:?}, slept {} ms, ev={} (r={}, w={})",
+    //         timeout,
+    //         poll_duration.as_millis(),
+    //         !events.is_empty(),
+    //         "?", // readable,
+    //         "?", // writable,
+    //     );
+
+    //     let conn_timeout_expired = timeout.map_or(false, |t| {
+    //         t.saturating_sub(poll_duration) == std::time::Duration::ZERO
+    //     });
+
+    //     if events.is_empty() && conn_timeout_expired {
+    //         trace!(
+    //             "timed out after {} ms, events_empty={}",
+    //             poll_duration.as_millis(),
+    //             events.is_empty()
+    //         );
+    //         self.clients.values_mut().for_each(|c| c.conn.on_timeout());
+    //     }
+
+    //     Ok(())
+    // }
 
     /// If a send is pending, this will try sending. If not, nothing is done.
     pub fn on_writable(&mut self, token: usize) -> Result<(), ServerError> {

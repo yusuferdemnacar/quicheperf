@@ -1,60 +1,42 @@
-use std::{
-    io::{Read, Write},
-    time::Duration,
-};
+use std::io::Write;
 
 use riptun::{Queue, Tun};
 
 pub const ALPN: [&[u8]; 2] = [b"quicheproxy", b"quicheproxy-00"];
 
-pub struct Proxy {}
-
-impl Proxy {
-    pub fn timeout(&self) -> Duration {
-        Duration::MAX
-    }
-}
-
-pub struct ProxyClient {
-    token: usize,
+pub struct Proxy {
     queue: Queue,
 }
 
-impl ProxyClient {
-    pub fn new(name: String, token: usize, poll: &mut mio::Poll) -> ProxyClient {
+impl Proxy {
+    pub fn new(name: String) -> Proxy {
         let mut tun = Tun::new(&name, 1).unwrap();
         info!("[INFO] => Created new virtual device: {}", tun.name());
 
-        let mut queue = tun.drain(..).next().unwrap();
-        // let mut queue: &mut Queue = tun.get_mut(0).unwrap();
-
-        // Ensure the Queue's underlying file descriptor is in non-blocking mode.
+        let queue = tun.drain(..).next().unwrap();
         queue.set_non_blocking(true).unwrap();
 
-        // Create this queue's token, register, and then map this queue to that generated token.
-        poll.registry()
-            .register(&mut queue, mio::Token(token), mio::Interest::READABLE)
-            .unwrap();
+        Proxy { queue }
+    }
 
-        ProxyClient { token, queue }
+    pub fn register(&mut self, token: usize, poll: &mut mio::Poll) {
+        poll.registry()
+            .register(&mut self.queue, mio::Token(token), mio::Interest::READABLE)
+            .unwrap();
     }
 
     // TODO: read all available packets not just one
-    pub fn read_tun(&self, event: &mio::event::Event, buf: &mut [u8; 1500]) -> usize {
-        let token: usize = event.token().into();
-        if event.is_readable() && token == self.token {
-            return match self.queue.recv(buf) {
-                Ok(read) => read,
-                // If its a WouldBlock simply short circuit, and re-poll the Queues.
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => 0,
-                Err(err) => {
-                    // If we error simply log the issue, and continue on business as usual.
-                    error!("[ERROR][Queue: {:?}] => {}", event.token(), err);
-                    0
-                }
-            };
+    pub fn read_tun(&self, buf: &mut [u8; 1500]) -> usize {
+        match self.queue.recv(buf) {
+            Ok(read) => read,
+            // If its a WouldBlock simply short circuit, and re-poll the Queues.
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => 0,
+            Err(err) => {
+                // If we error simply log the issue, and continue on business as usual.
+                error!("Reading from tun: {}", err);
+                0
+            }
         }
-        0
     }
 
     pub fn write_tun(&mut self, conn: &mut quiche::Connection) {
