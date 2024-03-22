@@ -7,6 +7,7 @@ use std::io;
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use std::time::Instant;
 use synchronized_writer::SynchronizedWriter;
 use zstd::stream::Encoder;
@@ -355,5 +356,28 @@ impl PathStatusUpdater {
                 true
             }
         });
+    }
+}
+
+pub struct KeepAlive {
+    threshold: Duration,
+}
+
+impl KeepAlive {
+    pub fn new(threshold: Duration) -> Self {
+        Self { threshold }
+    }
+
+    pub fn timeout(&self, conn: &quiche::Connection) -> Duration {
+        match conn.max_idle_duration() {
+            Some(d) => self.threshold.saturating_sub(d),
+            None => Duration::MAX,
+        }
+    }
+
+    pub fn check(&self, conn: &mut quiche::Connection) {
+        if let Err(e) = conn.probe_idle_paths(self.threshold) {
+            error!("Failed to probe idle paths: {}", e)
+        }
     }
 }

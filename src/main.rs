@@ -552,6 +552,8 @@ fn proxy_client(
     let mut proxy_client = proxy::Proxy::new("mp0".to_string());
     proxy_client.register(proxy_token, &mut poll);
 
+    let keep_alive = common::KeepAlive::new(Duration::from_millis(5000));
+
     let mut alpn_negotiated: bool = false;
 
     // Setup proxy protocol
@@ -567,13 +569,17 @@ fn proxy_client(
         // }
 
         let ui_timeout = ui.timeout();
+        let keep_alive_timeout = keep_alive.timeout(&client.conn);
         let early_data_timeout = if client.conn.is_in_early_data() {
             Duration::ZERO
         } else {
             Duration::MAX
         };
         let conn_timeout = client.conn.timeout().unwrap_or(Duration::ZERO);
-        let timeout = min(min(ui_timeout, early_data_timeout), conn_timeout);
+        let timeout = min(
+            min(min(ui_timeout, keep_alive_timeout), early_data_timeout),
+            conn_timeout,
+        );
 
         let poll_start = Instant::now();
         if let Err(e) = poll.poll(&mut events, Some(timeout)) {
@@ -588,14 +594,21 @@ fn proxy_client(
             // Running this if a timeout has not actually occured has no adverse effect.
             client.conn.on_timeout();
         }
+        let keep_alive_expired = events.is_empty()
+            && keep_alive_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
+        if keep_alive_expired {
+            keep_alive.check(&mut client.conn);
+        }
+
         log::trace!(
-            "timeout (ms) {}, slept {}, expired={}, early={}, conn={}, ui={}",
+            "timeout (ms) {}, slept {}, ui={}, ka={}, expired={}, early={}, conn={}",
             timeout.as_millis(),
             poll_duration.as_millis(),
+            ui_timeout.as_millis(),
+            keep_alive_timeout.as_millis(),
             conn_timeout_expired,
             early_data_timeout.as_millis(),
             conn_timeout.as_millis(),
-            ui_timeout.as_millis(),
         );
 
         for event in &events {

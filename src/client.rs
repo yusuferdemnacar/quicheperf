@@ -107,14 +107,14 @@ impl SocketState {
 }
 
 pub struct Client {
-    local_addrs: Vec<SocketAddr>,
+    pub local_addrs: Vec<SocketAddr>,
     peer_addrs: Vec<SocketAddr>,
 
     pub conn: quiche::Connection,
     sockets: Slab<SocketState>,
     src_addr_tokens: HashMap<SocketAddr, usize>,
     app_data_start: Option<Instant>,
-    pub recv_buf: [u8; 65535],
+    recv_buf: [u8; 65535],
     rng: SystemRandom,
     probed_paths: usize,
 }
