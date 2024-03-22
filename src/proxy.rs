@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::Write;
 
 use riptun::{Queue, Tun};
 
@@ -29,22 +29,48 @@ impl Proxy {
     }
 
     // TODO: read all available packets not just one
-    pub fn read_tun(&self, buf: &mut [u8; 1500]) -> usize {
-        match self.queue.recv(buf) {
-            Ok(read) => read,
-            // If its a WouldBlock simply short circuit, and re-poll the Queues.
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => 0,
-            Err(err) => {
-                // If we error simply log the issue, and continue on business as usual.
-                error!("Reading from tun: {}", err);
-                0
+    // TODO: use read_vectored?
+    pub fn read_tun(&mut self, conn: &mut quiche::Connection) {
+        let mut buf: [u8; 1500] = [0x00; 1500];
+        loop {
+            let written = match self.queue.recv(&mut buf) {
+                Ok(read) => read,
+                // If its a WouldBlock simply short circuit, and re-poll the Queues.
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(err) => {
+                    // If we error simply log the issue, and continue on business as usual.
+                    error!("Reading from tun: {}", err);
+                    break;
+                }
+            };
+
+            if written == 0 {
+                return;
+            }
+
+            trace!(
+                "Sending dgram with {}B, max={:?}B",
+                written,
+                conn.dgram_max_writable_len()
+            );
+            if let Err(e) = conn.dgram_send(&buf[..written]) {
+                match e {
+                    quiche::Error::Done => (),
+                    quiche::Error::BufferTooShort => error!("Trying dgram_send but {}", e),
+                    quiche::Error::InvalidState => error!("Trying dgram_send but {}", e),
+                    _ => panic!("Unexpected dgram error: {}", e),
+                }
             }
         }
     }
 
     pub fn write_tun(&mut self, conn: &mut quiche::Connection) {
         while let Ok(data) = conn.dgram_recv_vec() {
-            trace!("{} received {} bytes from dgram", conn.trace_id(), data.len());
+            trace!(
+                "{} received {} bytes from dgram",
+                conn.trace_id(),
+                data.len()
+            );
 
             self.queue.write(&data).unwrap();
         }
