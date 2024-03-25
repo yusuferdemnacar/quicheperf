@@ -63,7 +63,6 @@ impl SocketState {
         buf.map(|v| self.buf.clone_from_slice(v));
         self.until = until;
         self.to = Some(to);
-        trace!("try_send: schedule {} bytes to {}", self.until, to);
     }
 
     /// Try to send the scheduled buffer, if it exists. Returns `Ok(0)` if the
@@ -334,7 +333,7 @@ impl Client {
                         // There are no more UDP packets to read on this socket.
                         // Process subsequent events.
                         if e.kind() == std::io::ErrorKind::WouldBlock {
-                            trace!("{}: recv() would block", local_addr);
+                            // trace!("{}: recv() would block", local_addr);
                             break 'read;
                         }
 
@@ -345,7 +344,7 @@ impl Client {
                     }
                 };
 
-                trace!("{}->{}: got {} bytes", from, local_addr, len);
+                // trace!("{}->{}: got {} bytes", from, local_addr, len);
 
                 let recv_info = quiche::RecvInfo {
                     to: local_addr,
@@ -362,7 +361,7 @@ impl Client {
                     }
                 };
 
-                trace!("{}: processed {} bytes", local_addr, read);
+                // trace!("{}: processed {} bytes", local_addr, read);
             }
         }
 
@@ -482,7 +481,7 @@ impl Client {
                 Ok(v) => v,
 
                 Err(quiche::Error::Done) => {
-                    trace!("{} -> {}: done writing to conn", local_addr, peer_addr);
+                    // trace!("{} -> {}: done writing to conn", local_addr, peer_addr);
                     break;
                 }
                 Err(e) => {

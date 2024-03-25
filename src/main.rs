@@ -67,7 +67,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
 
     // config.set_application_protos(&perf::ALPN).unwrap();
 
-    config.set_max_idle_timeout(300_000); // in ms
+    config.set_max_idle_timeout(30_000); // in ms
     config.set_max_recv_udp_payload_size(common::MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(common::MAX_DATAGRAM_SIZE);
     config.set_initial_max_data(args.max_data);
@@ -253,11 +253,7 @@ fn main() -> ExitCode {
                 Ok(_) => ExitCode::SUCCESS,
             };
         }
-        cli::Subcommands::Server {
-            cert,
-            key,
-            oneshot: _,
-        } => {
+        cli::Subcommands::Server { cert, key, oneshot } => {
             if let Err(e) = quiche_config.load_cert_chain_from_pem_file(cert.to_str().unwrap()) {
                 eprintln!("Error loading certificate from {:?}: {}", cert, e);
                 return ExitCode::FAILURE;
@@ -279,7 +275,7 @@ fn main() -> ExitCode {
                     }
                 };
 
-            return match perf_server(server, terminate) {
+            return match perf_server(server, oneshot, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
                     eprintln!("Fatal: {}", e);
@@ -465,7 +461,11 @@ fn perf_client(
     Ok(())
 }
 
-fn perf_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), server::ServerError> {
+fn perf_server(
+    mut server: Server,
+    oneshot: bool,
+    terminate: Arc<AtomicBool>,
+) -> Result<(), server::ServerError> {
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
     server.register(&poll);
@@ -532,8 +532,15 @@ fn perf_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), ser
             }
         }
         server.send()?;
-        server.garbage_collect();
+
+        let client_collected = server.garbage_collect();
+        if oneshot && client_collected {
+            info!("oneshot mode, exit");
+            break;
+        }
     }
+
+    Ok(())
 }
 
 fn proxy_client(

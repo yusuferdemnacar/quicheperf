@@ -743,7 +743,8 @@ impl Server {
         Ok(())
     }
 
-    pub fn garbage_collect(&mut self) {
+    /// Returns true if at least one client connection was cleaned up.
+    pub fn garbage_collect(&mut self) -> bool {
         let closed_cids: Vec<u64> = self
             .clients
             .iter()
@@ -763,8 +764,10 @@ impl Server {
         self.clients_ids
             .retain(|_, client_id| !closed_cids.contains(client_id));
 
-        for cid in closed_cids {
+        for cid in closed_cids.iter() {
             self.clients.remove(&cid);
         }
+
+        !closed_cids.is_empty()
     }
 }
