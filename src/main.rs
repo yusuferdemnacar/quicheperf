@@ -160,7 +160,7 @@ fn main() -> ExitCode {
     let t = terminate.clone();
 
     ctrlc::set_handler(move || {
-        info!("SIGINT received");
+        debug!("SIGINT received, set terminate=true");
         t.store(true, Ordering::SeqCst);
     })
     .expect("Error setting Ctrl-C handler");
@@ -368,7 +368,8 @@ fn perf_client(
     client.connect(&mut scheduler)?;
 
     loop {
-        if terminate.load(Ordering::SeqCst) {
+        if terminate.load(Ordering::SeqCst) && client.conn.local_error().is_none() {
+            debug!("Close conn due to SIGINT [0]");
             client.conn.close(true, 0x1, b"user terminated").ok();
         }
 
@@ -409,15 +410,20 @@ fn perf_client(
         }
 
         log::trace!(
-            "timeout (ms) {}, slept {}, expired={}, early={}, conn={}, ui={}, perf={}",
+            "timeout (ms) {}, slept {}, conn_expired={}: early={}, conn={}, ui={}, perf={}",
             timeout.as_millis(),
             poll_duration.as_millis(),
             conn_timeout_expired,
-            early_data_timeout.as_millis(),
-            conn_timeout.as_millis(),
-            ui_timeout.as_millis(),
-            protocol_timeout.as_millis(),
+            common::duration_as_millis(early_data_timeout),
+            common::duration_as_millis(conn_timeout),
+            common::duration_as_millis(ui_timeout),
+            common::duration_as_millis(protocol_timeout),
         );
+
+        if terminate.load(Ordering::SeqCst) && client.conn.local_error().is_none() {
+            debug!("Close conn due to SIGINT [1]");
+            client.conn.close(true, 0x1, b"user terminated").ok();
+        }
 
         for event in &events {
             client.read(event)?;
@@ -567,7 +573,8 @@ fn proxy_client(
     client.connect(&mut scheduler)?;
 
     loop {
-        if terminate.load(Ordering::SeqCst) {
+        if terminate.load(Ordering::SeqCst) && client.conn.local_error().is_none() {
+            debug!("Close conn due to SIGINT [0]");
             client.conn.close(true, 0x1, b"user terminated").ok();
         }
 
@@ -583,10 +590,15 @@ fn proxy_client(
             Duration::MAX
         };
         let conn_timeout = client.conn.timeout().unwrap_or(Duration::ZERO);
-        let timeout = min(
-            min(min(ui_timeout, keep_alive_timeout), early_data_timeout),
+        let timeout = *[
+            ui_timeout,
+            keep_alive_timeout,
+            early_data_timeout,
             conn_timeout,
-        );
+        ]
+        .iter()
+        .min()
+        .unwrap();
 
         let poll_start = Instant::now();
         if let Err(e) = poll.poll(&mut events, Some(timeout)) {
@@ -608,15 +620,21 @@ fn proxy_client(
         }
 
         log::trace!(
-            "timeout (ms) {}, slept {}, ui={}, ka={}, expired={}, early={}, conn={}",
+            "timeout (ms) {}, slept {}, conn_expired={}, events={}: ui={}, ka={}, early={}, conn={}",
             timeout.as_millis(),
             poll_duration.as_millis(),
-            ui_timeout.as_millis(),
-            keep_alive_timeout.as_millis(),
             conn_timeout_expired,
-            early_data_timeout.as_millis(),
-            conn_timeout.as_millis(),
+            !events.is_empty(),
+            common::duration_as_millis(ui_timeout),
+            common::duration_as_millis(keep_alive_timeout),
+            common::duration_as_millis(early_data_timeout),
+            common::duration_as_millis(conn_timeout),
         );
+
+        if terminate.load(Ordering::SeqCst) && client.conn.local_error().is_none() {
+            debug!("Close conn due to SIGINT [1]");
+            client.conn.close(true, 0x1, b"user terminated").ok();
+        }
 
         for event in &events {
             let token: usize = event.token().into();
@@ -701,7 +719,6 @@ fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), se
         if let Err(e) = poll.poll(&mut events, timeout) {
             if e.kind() != std::io::ErrorKind::Interrupted {
                 error!("Poll returned error: {}", e);
-                // break;
             }
         }
         let poll_duration = poll_start.elapsed();
@@ -715,9 +732,14 @@ fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), se
                 .values_mut()
                 .for_each(|c| c.conn.on_timeout());
         }
+
+        let timeout_str = match timeout {
+            Some(v) => v.as_millis().to_string(),
+            None => "None".to_string(),
+        };
         log::trace!(
-            "timeout {:?}, slept {}, expired={}",
-            timeout,
+            "timeout (ms) {}: slept {}, expired={}",
+            timeout_str,
             poll_duration.as_millis(),
             conn_timeout_expired,
         );

@@ -312,6 +312,15 @@ pub fn lowest_latency_scheduler(
         .map(|p| (p.local_addr, p.peer_addr))
 } */
 
+#[inline]
+pub fn duration_as_millis(d: Duration) -> String {
+    if d < Duration::MAX {
+        d.as_millis().to_string()
+    } else {
+        "MAX".to_string()
+    }
+}
+
 pub struct PathStatusUpdater {
     start: Instant,
     local_addrs: Vec<SocketAddr>,

@@ -60,6 +60,7 @@ impl SocketState {
     }
 
     /// Returns whether a buffer is currently waiting to be written to the socket.
+    #[allow(dead_code)]
     fn send_pending(&self) -> bool {
         self.send_info.is_some()
     }
@@ -78,12 +79,6 @@ impl SocketState {
             Some(v) => v,
             None => return Ok(0),
         };
-        trace!(
-            "{:}->{:} try sending scheduled {} bytes",
-            send_info.from,
-            send_info.to,
-            self.until
-        );
         match sendto::send_to(
             &self.socket,
             &self.buf[..self.until],
@@ -102,7 +97,7 @@ impl SocketState {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
                     // TODO: The data of "out" is thrown away, right? Should I handle this?
                     // Is this assertion correct? It isn't, right?
-                    trace!("send() would block");
+                    trace!("send() would block, will try_send again alter");
                     return Ok(0);
                 }
 
@@ -128,7 +123,7 @@ pub struct Client {
 impl Client {
     pub fn recv(&mut self, pkt_buf: &mut [u8], recv_info: RecvInfo) -> Result<(), ServerError> {
         // Process potentially coalesced packets.
-        let read = match self.conn.recv(pkt_buf, recv_info) {
+        let _read = match self.conn.recv(pkt_buf, recv_info) {
             Ok(v) => v,
 
             Err(e) => {
@@ -139,8 +134,6 @@ impl Client {
                 )));
             }
         };
-
-        trace!("{} processed {} bytes", self.conn.trace_id(), read);
 
         // Create a new application protocol session as soon as the QUIC
         // connection is established.
@@ -449,7 +442,7 @@ impl Server {
                 Err(e) => {
                     // There are no more UDP packets to read, so end the read loop
                     if e.kind() == std::io::ErrorKind::WouldBlock {
-                        trace!("recv() from {:} would block", local_addr);
+                        // trace!("recv() from {:} would block", local_addr);
                         return Ok(());
                     }
                     return Err(ServerError::FatalSocket(format!(
@@ -473,7 +466,7 @@ impl Server {
                 }
             };
 
-            trace!("{:}->{:}: {} bytes, {:?}", from, local_addr, len, hdr);
+            // trace!("{:}->{:}: reveived {} bytes, {:?}", from, local_addr, len, hdr);
 
             let recv_info = quiche::RecvInfo {
                 to: local_addr,

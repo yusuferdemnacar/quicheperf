@@ -22,7 +22,7 @@ impl Proxy {
     }
 
     pub fn register(&mut self, token: usize, poll: &mut mio::Poll) {
-        debug!("Registered tun with token {} with mio", token);
+        trace!("Registered tun with token {} with mio", token);
         poll.registry()
             .register(&mut self.queue, mio::Token(token), mio::Interest::READABLE)
             .unwrap();
