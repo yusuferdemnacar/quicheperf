@@ -127,12 +127,12 @@ impl Client {
         let mut sockets = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
         let mut src_addr_tokens = HashMap::new();
 
-        let mut addrs = Vec::new();
+        let mut addrs: Vec<std::net::SocketAddr> = Vec::new();
         for src_addr in local_addrs.into_iter() {
             let socket = mio::net::UdpSocket::bind(src_addr).map_err(|e| {
                 ClientError::Other(format!("Failed binding to {}: {}", src_addr, e))
             })?;
-            let local_addr = socket.local_addr().unwrap();
+            let local_addr = socket.local_addr().unwrap().into();
 
             #[cfg(target_os = "linux")]
             {
@@ -173,15 +173,19 @@ impl Client {
             //     )
             //     .expect("Failed registering socket with mio");
         }
-        let local_addr = *addrs.first().unwrap();
+
+        let (local_addr, peer_addr) = common::match_local_peer_ip_version(
+            *addrs.first().unwrap(),
+            *peer_addrs.first().unwrap(),
+        )
+        .map_err(|e| ClientError::Other(e))?;
 
         config.log_keys();
 
         // Create a QUIC connection and initiate handshake.
         let rng = SystemRandom::new();
         let scid = gen_scid(&rng);
-        let mut conn =
-            quiche::connect(None, &scid, local_addr, peer_addrs[0], &mut config).unwrap();
+        let mut conn = quiche::connect(None, &scid, local_addr, peer_addr, &mut config).unwrap();
 
         let mut keylog = configure_keylog();
         if let Some(keylog) = &mut keylog {
@@ -209,7 +213,7 @@ impl Client {
             local_addrs: addrs,
             peer_addrs,
 
-            conn: conn,
+            conn,
             sockets,
             src_addr_tokens,
             app_data_start: None,
@@ -352,7 +356,7 @@ impl Client {
                 };
 
                 // Process potentially coalesced packets.
-                let read = match self.conn.recv(&mut self.recv_buf[..len], recv_info) {
+                let _read = match self.conn.recv(&mut self.recv_buf[..len], recv_info) {
                     Ok(v) => v,
 
                     Err(e) => {
@@ -424,32 +428,37 @@ impl Client {
 
     pub fn probe_paths_if_necessary(&mut self) -> Result<(), ClientError> {
         if self.probed_paths < self.local_addrs.len() {
+            let (local_addr, peer_addr) = common::match_local_peer_ip_version(
+                self.local_addrs[self.probed_paths],
+                self.peer_addrs[self.probed_paths],
+            )
+            .map_err(|e| ClientError::Other(e))?;
+
             trace!(
                 "probed_path={}, addrs={:?}",
                 self.probed_paths,
                 self.local_addrs
             );
-            let local_probe_addr = self.local_addrs[self.probed_paths];
-            let peer_probe_addr = self.peer_addrs[self.probed_paths];
+
             if self.conn.available_dcids() > 0 {
-                match self.conn.probe_path(local_probe_addr, peer_probe_addr) {
+                match self.conn.probe_path(local_addr, peer_addr) {
                     Ok(v) => {
                         info!(
                             "{:}->{:} Successfully started probing for path with dcid {}",
-                            local_probe_addr, peer_probe_addr, v
+                            local_addr, peer_addr, v
                         );
                         self.probed_paths += 1;
                     }
                     Err(e) => error!(
                         "{:}->{:} Failed probing path from: {}",
-                        local_probe_addr, peer_probe_addr, e
+                        local_addr, peer_addr, e
                     ),
                 }
             }
             // else if app_data_start.elapsed() > Duration::from_secs(3) {
             //     warn!(
             //         "{:}->{:} Failed to probe path: No DCID available.",
-            //         local_probe_addr, peer_probe_addr
+            //         local_addr, peer_addr
             //     );
             // }
         }

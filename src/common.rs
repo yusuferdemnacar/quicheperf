@@ -301,6 +301,29 @@ pub fn configure_keylog() -> Option<File> {
     None
 }
 
+/// Convert peer address to IPv6 if necessary. It is necessary to match the address
+/// returned from a socket that listens for IPv4 and IPv6 addresses.
+pub fn match_local_peer_ip_version(
+    local: SocketAddr,
+    peer: SocketAddr,
+) -> Result<(SocketAddr, SocketAddr), String> {
+    let local_v4 = local.is_ipv4();
+    let peer_v4 = peer.is_ipv4();
+    match (local_v4, peer_v4) {
+        (true, true) => Ok((local, peer)),
+        (false, false) => Ok((local, peer)),
+        (true, false) => Err("Local IP is v4, remote is v6".into()),
+        (false, true) => {
+            let ipv6_mapped = match peer {
+                SocketAddr::V4(v) => v.ip().to_ipv6_mapped(),
+                SocketAddr::V6(_) => unreachable!(),
+            };
+            let p = SocketAddr::new(ipv6_mapped.into(), peer.port());
+            Ok((local, p))
+        }
+    }
+}
+
 /* /// Generate a ordered list of 4-tuples on which the host should send packets,
 /// following a lowest-latency scheduling.
 pub fn lowest_latency_scheduler(
