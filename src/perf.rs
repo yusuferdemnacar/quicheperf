@@ -36,10 +36,11 @@ pub struct Perf {
     pub config_acked: bool,
     pub tc: Option<TestConfig>,
     password: Option<String>,
-    start: Option<Instant>,
 
+    // Set after TestConfig was ACKed
+    started_at: Option<Instant>,
     // Set after test duration expired
-    finished: bool,
+    finished_at: Option<Instant>,
 
     // Point in time when data was last sent
     last_send: Option<Instant>,
@@ -56,8 +57,8 @@ impl Perf {
             config_acked: false,
             tc: Some(tc),
             password,
-            start: None,
-            finished: false,
+            started_at: None,
+            finished_at: None,
             last_send: None,
             buf: [0; 65535],
         }
@@ -70,15 +71,15 @@ impl Perf {
             config_acked: false,
             tc: None,
             password,
-            start: None,
-            finished: false,
+            started_at: None,
+            finished_at: None,
             last_send: None,
             buf: [0; 65535],
         }
     }
 
     pub fn timeout(&self) -> time::Duration {
-        if self.finished
+        if self.finished_at.is_some()
             || self.tc.is_none()
             || self.tc.as_ref().unwrap().bitrate_target.is_none()
             || !self.config_sent
@@ -104,6 +105,9 @@ impl Perf {
                 self.recv_config_ack(conn).ok();
             }
             if self.config_acked {
+                if self.started_at.is_none() {
+                    self.started_at = Some(Instant::now());
+                }
                 self.work(conn).ok();
             }
         }
@@ -119,6 +123,16 @@ impl Perf {
             // }
         } else {
             self.work(conn).ok();
+        }
+    }
+
+    /// Returns how much of the test duration has elapsed. Stops increasing once the test has finished.
+    pub fn test_duration_elapsed(&self) -> Duration {
+        match (self.started_at, self.finished_at) {
+            (None, None) => Duration::ZERO,
+            (None, Some(_)) => unreachable!(),
+            (Some(s), None) => s.elapsed(),
+            (Some(s), Some(e)) => e - s,
         }
     }
 
@@ -139,10 +153,10 @@ impl Perf {
 
     /// Check if the test duration expired and close connection if applicable
     fn close_after_duration(&mut self, conn: &mut Connection) -> bool {
-        if self.finished {
+        if self.finished_at.is_some() {
             return true;
         }
-        let duration_remaining = match (&self.tc, self.start) {
+        let duration_remaining = match (&self.tc, self.started_at) {
             (Some(tc), Some(start)) => tc
                 .duration
                 .checked_sub(start.elapsed())
@@ -154,10 +168,10 @@ impl Perf {
         }
         debug!(
             "Closing connection after {:?} because --duration={:?} passed",
-            self.start.unwrap().elapsed(),
+            self.started_at.unwrap().elapsed(),
             self.tc.as_ref().unwrap().duration
         );
-        self.finished = true;
+        self.finished_at = Some(Instant::now());
         match conn.close(true, 0x00, b"kthxbye") {
             // Already closed.
             Ok(_) | Err(quiche::Error::Done) => true,
@@ -195,7 +209,6 @@ impl Perf {
         }
 
         self.tc = Some(tc.clone());
-        self.start = Some(Instant::now());
 
         Ok(())
     }

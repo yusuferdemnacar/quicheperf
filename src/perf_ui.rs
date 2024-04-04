@@ -44,7 +44,6 @@ const UPDATE_FREQ: Duration = Duration::from_secs(1);
 #[derive(Debug)]
 pub struct PerfUI {
     client_sending: bool,
-    start: Instant,
     last_update: Option<Instant>,
     draining_line_printed: bool,
 
@@ -61,7 +60,6 @@ impl PerfUI {
     pub fn new(client_sending: bool) -> Self {
         PerfUI {
             client_sending,
-            start: Instant::now(),
             last_update: None,
             draining_line_printed: false,
 
@@ -121,13 +119,14 @@ impl PerfUI {
         &mut self,
         conn: &quiche::Connection,
         scheduler: &mut Box<dyn MultipathScheduler>,
+        elapsed: Duration,
     ) -> Result<()> {
         let update_due = self.last_update.map_or(true, |v| v.elapsed() > UPDATE_FREQ);
         if !update_due || conn.is_closed() {
             return Ok(());
         }
         let scheduled = scheduler.pop_scheduling_decisions();
-        self.print_per_second_update(conn, scheduled)?;
+        self.print_per_second_update(conn, scheduled, elapsed)?;
 
         if conn.is_draining() && !self.draining_line_printed {
             writeln!(io::stdout(), "Connection is draining ...")?;
@@ -143,6 +142,7 @@ impl PerfUI {
         &mut self,
         conn: &quiche::Connection,
         scheduled: SchedulingDecisions,
+        elapsed: Duration,
     ) -> Result<()> {
         let npaths = conn.path_stats().count();
         if self.last_update.is_none() || self.paths.len() < npaths {
@@ -248,7 +248,7 @@ impl PerfUI {
         let (fc_value, fc_unit) = fmt_unit(stream_0_capacity);
 
         let time = chrono::Local::now().format("%M:%S");
-        let elapsed = self.start.elapsed().as_secs();
+        let elapsed = elapsed.as_secs();
 
         if npaths < 2 {
             writeln!(
@@ -282,25 +282,30 @@ impl PerfUI {
         Ok(())
     }
 
-    pub fn print_summary(&mut self, conn: &quiche::Connection) -> Result<()> {
+    /// Called at the end of a test to print a final line.
+    /// `finished_at` is Some if the test ended after the desired timeout. Otherwise it is None (e.g., on SIGINT).
+    pub fn print_summary(&mut self, conn: &quiche::Connection, elapsed: Duration) -> Result<()> {
         let stats = conn.stats();
 
-        let tput_total = if self.client_sending {
-            (stats.sent_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6
-        } else {
-            (stats.recv_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6
+        let test_duration = elapsed.as_secs_f64();
+
+        let tput_total = match (self.client_sending, test_duration != 0.0) {
+            (true, true) => (stats.sent_bytes as f64 / test_duration) * 8.0 / 1e6,
+            (false, true) => (stats.recv_bytes as f64 / test_duration) * 8.0 / 1e6,
+            (_, false) => 0.0,
         };
-        let lost_perc = (stats.lost as f32 / stats.sent as f32) * 100.0;
+
+        let lost_perc = (stats.lost as f64 / stats.sent as f64) * 100.0;
 
         let mut pstr = String::new();
         for (_i, pstats) in conn.path_stats().enumerate() {
-            let ptput = if self.client_sending {
-                (pstats.sent_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6
-            } else {
-                (pstats.recv_bytes as f32 / self.start.elapsed().as_secs_f32()) * 8.0 / 1e6
+            let ptput = match (self.client_sending, test_duration != 0.0) {
+                (true, true) => (pstats.sent_bytes as f64 / test_duration) * 8.0 / 1e6,
+                (false, true) => (pstats.recv_bytes as f64 / test_duration) * 8.0 / 1e6,
+                (_, false) => 0.0,
             };
 
-            let plost_perc = (pstats.lost as f32 / pstats.sent as f32) * 100.0;
+            let plost_perc = (pstats.lost as f64 / pstats.sent as f64) * 100.0;
 
             pstr.push_str(&format!("| {:>10.2} | {:>17.4}% ", ptput, plost_perc));
         }
@@ -311,7 +316,7 @@ impl PerfUI {
         if conn.path_stats().count() < 2 {
             writeln!(
                 io::stdout(),
-                "| {:>3} | {:>13} ‖ {:>7.2}       | {:>5} {:>11.4}% |",
+                "| {:>3} | {:>13} ‖ {:>7.2}       | {:>5} {:>17.4}% |",
                 first_col,
                 "",
                 tput_total,

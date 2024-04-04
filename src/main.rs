@@ -373,8 +373,9 @@ fn perf_client(
             client.conn.close(true, 0x1, b"user terminated").ok();
         }
 
-        if protocol.is_some() {
-            ui.update(&client.conn, &mut scheduler).ok();
+        if let Some(ref p) = protocol {
+            ui.update(&client.conn, &mut scheduler, p.test_duration_elapsed())
+                .ok();
         }
 
         let ui_timeout = ui.timeout();
@@ -460,8 +461,9 @@ fn perf_client(
 
     client.on_close()?;
 
-    if protocol.is_some() {
-        ui.print_summary(&client.conn).ok();
+    if let Some(p) = protocol {
+        ui.print_summary(&client.conn, p.test_duration_elapsed())
+            .ok();
     }
 
     Ok(())
