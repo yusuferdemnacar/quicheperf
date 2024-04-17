@@ -18,7 +18,7 @@ boringssl-boring-crate = ["quiche/boringssl-boring-crate"]
 # Enable sfv support.
 sfv = ["quiche/sfv"]
 
-default = ["qlog", "sfv"]
+default = ["qlog"]
 
 [dependencies]
 env_logger = "0.6"
@@ -26,7 +26,7 @@ mio = { version = "0.8", features = ["net", "os-poll"] }
 url = "1"
 log = "0.4"
 ring = "0.16"
-quiche = { path = "../quiche/quiche" }
+quiche = { path = "../quiche/quiche", default-features = false, features=["boringssl-vendored"] } #  "boringssl-boring-crate"
 qlog = { path = "../quiche/qlog" }
 libc = "0.2"
 nix = { version = "0.27.1", features = ["uio", "net"] }
@@ -36,7 +36,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_derive = "1.0"
 serde_with = "1.3.1"
-chrono = "0.4.23"
+time = { version = "0.3.36", features = ["formatting", "local-offset", "macros"] }
+lazy_static = { version = "1.4.0" }
 zstd = { version = "0.12.0", features=["zstdmt"] }
 synchronized-writer = "1.1.11"
 git-testament = "0.2.1"
@@ -44,6 +45,3 @@ clap = { version = "4.1.4", features = ["derive"] }
 parse-size = "1.0.0"
 ctrlc = "3.4.0"
 riptun = { git = "https://github.com/hendrikcech/riptun.git", branch = "develop", default-features = false, features = ["mio-impl", "mio"] }
-
-# [lib]
-# crate-type = ["lib"]

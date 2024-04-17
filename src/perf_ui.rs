@@ -1,14 +1,15 @@
+use crate::perf::TestConfig;
+use itertools::Itertools;
+use quiche::scheduler::{MultipathScheduler, SchedulingDecisions};
 use std::collections::HashMap;
 use std::io;
 use std::io::{Result, Write};
 use std::net::SocketAddr;
 use std::time::Duration;
 use std::time::Instant;
-
-use itertools::Itertools;
-use quiche::scheduler::{MultipathScheduler, SchedulingDecisions};
-
-use crate::perf::TestConfig;
+use time::format_description::well_known::Iso8601;
+use time::macros::format_description;
+use time::OffsetDateTime;
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 struct FourTuple {
@@ -85,7 +86,7 @@ impl PerfUI {
             .map(|(path_id, (l, p))| format!("- P{}: {}\t{} {}", path_id, l, arrow, p))
             .join("\n");
 
-        let local_time = chrono::Local::now();
+        let local_time = OffsetDateTime::now_utc().to_offset(*crate::UTC_OFFSET);
 
         writeln!(
             io::stdout(),
@@ -98,7 +99,7 @@ impl PerfUI {
             test_type = test_type,
             addr_pairs = addr_pairs,
             duration = tc.duration,
-            time = local_time.format("%y-%m-%dT%H:%M:%S")
+            time = local_time.format(&Iso8601::DEFAULT).unwrap(),
         )?;
 
         Ok(())
@@ -247,7 +248,9 @@ impl PerfUI {
         let stream_0_capacity = conn.stream_stats(0).map_or(0, |s| s.send_capacity);
         let (fc_value, fc_unit) = fmt_unit(stream_0_capacity);
 
-        let time = chrono::Local::now().format("%M:%S");
+        let format = format_description!("[minute]:[second]");
+        let now = OffsetDateTime::now_utc().to_offset(*crate::UTC_OFFSET);
+        let time = now.format(&format).unwrap();
         let elapsed = elapsed.as_secs();
 
         if npaths < 2 {

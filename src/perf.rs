@@ -32,9 +32,9 @@ pub struct TestConfigAck {
 
 #[derive(Debug, Clone)]
 pub struct Perf {
-    pub config_sent: bool,
-    pub config_acked: bool,
-    pub tc: Option<TestConfig>,
+    config_sent: bool,
+    config_acked: bool,
+    tc: Option<TestConfig>,
     password: Option<String>,
 
     // Set after TestConfig was ACKed

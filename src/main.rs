@@ -56,6 +56,17 @@ use quiche::scheduler::{self, MultipathScheduler};
 use server::Server;
 use std::net::SocketAddr;
 
+use lazy_static::lazy_static;
+
+lazy_static! {
+    // time panics when trying to fetch the local time offset in a multi-threaded program.
+    // We therefore store it when the program is initialized.
+    pub static ref UTC_OFFSET: time::UtcOffset = time::UtcOffset::current_local_offset().unwrap_or_else(|_| {
+        warn!("Failed to retrieve the local UTC offset");
+        time::UtcOffset::UTC
+    });
+}
+
 pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     let mut config = match quiche::Config::new(quiche::PROTOCOL_VERSION) {
         Ok(v) => v,
@@ -147,6 +158,8 @@ fn main() -> ExitCode {
     env_logger::builder()
         .default_format_timestamp_nanos(true)
         .init();
+
+    lazy_static::initialize(&UTC_OFFSET);
 
     // Parse CLI parameters.
     let args = cli::Args::parse();

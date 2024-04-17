@@ -10,6 +10,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 use synchronized_writer::SynchronizedWriter;
+use time::format_description::well_known::Iso8601;
+use time::macros::format_description;
+use time::OffsetDateTime;
 use zstd::stream::Encoder;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -216,12 +219,14 @@ pub fn set_qlog(
     peer_addr: Option<String>,
 ) {
     if let Some(dir) = std::env::var_os("QLOGDIR") {
-        let local_time = chrono::Local::now();
-        let utc_time: chrono::DateTime<chrono::Utc> = chrono::DateTime::from(local_time);
+        let now_utc = OffsetDateTime::now_utc();
+        let compact_fmt =
+            format_description!("[year repr:last_two][month][day]T[hour][minute][second]");
+        let time_compact = now_utc.format(&compact_fmt).unwrap();
+        let time_iso = now_utc.format(&Iso8601::DEFAULT).unwrap();
 
         let mut path = std::path::PathBuf::from(dir);
-        let day = utc_time.format("%y%m%dT%H%M%S");
-        let filename = format!("{}-{}-{}.sqlog.zst", day, scid, role);
+        let filename = format!("{}-{}-{}.sqlog.zst", time_compact, scid, role);
         path.push(filename);
 
         let writer = match std::fs::File::create(&path) {
@@ -251,9 +256,7 @@ pub fn set_qlog(
             "quicheperf".to_string(),
             format!(
                 "quicheperf id={} start_time={}{}",
-                scid,
-                local_time.to_rfc3339(),
-                peer_addr
+                scid, time_iso, peer_addr
             ),
             quiche::QlogLevel::Extra,
         );
