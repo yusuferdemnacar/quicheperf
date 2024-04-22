@@ -39,6 +39,8 @@ mod sendto;
 mod server;
 
 use std::cmp::min;
+use std::io::Write;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -154,6 +156,88 @@ pub const fn version() -> &'static str {
     }
 }
 
+/// A default certificate and key is stored in the binary. Due to the TLS API restrictions, we
+/// write these to a temporary file and let the library read them. The temp files are deleted
+/// when this function returns.
+fn set_default_cert(config: &mut quiche::Config) -> Result<(), String> {
+    const STATIC_CERT: &[u8] = include_bytes!("cert.crt");
+    const STATIC_KEY: &[u8] = include_bytes!("cert.key");
+
+    let mut tmp_cert = match tempfile::NamedTempFile::new() {
+        Ok(v) => v,
+        Err(e) => return Err(format!("Failed to create tempfile: {}", e.to_string())),
+    };
+    if let Err(e) = tmp_cert.write_all(STATIC_CERT) {
+        return Err(format!("Failed to write to tempfile: {}", e.to_string()));
+    }
+
+    if let Err(e) = config.load_cert_chain_from_pem_file(tmp_cert.path().to_str().unwrap()) {
+        return Err(format!(
+            "Error loading default certificate from {:?}: {}",
+            tmp_cert.path(),
+            e
+        ));
+    } else {
+        info!(
+            "Successfully read default cert from temp_file {:?}",
+            tmp_cert.path()
+        );
+    };
+
+    let mut tmp_key = match tempfile::NamedTempFile::new() {
+        Ok(v) => v,
+        Err(e) => return Err(format!("Failed to create tempfile: {}", e.to_string())),
+    };
+    if let Err(e) = tmp_key.write_all(STATIC_KEY) {
+        return Err(format!("Failed to write to tempfile: {}", e.to_string()));
+    }
+
+    if let Err(e) = config.load_priv_key_from_pem_file(tmp_key.path().to_str().unwrap()) {
+        return Err(format!(
+            "Error loading private key from {:?}: {}",
+            tmp_key.path(),
+            e
+        ));
+    } else {
+        trace!(
+            "Successfully read default key from temp_file {:?}",
+            tmp_key.path()
+        );
+    };
+
+    Ok(())
+}
+
+fn server_set_cert(
+    quiche_config: &mut quiche::Config,
+    cert: Option<PathBuf>,
+    key: Option<PathBuf>,
+) -> Option<ExitCode> {
+    match (cert, key) {
+        (None, None) => {
+            if let Err(e) = set_default_cert(quiche_config) {
+                eprintln!("{}", e);
+                error!("{}", e);
+                return Some(ExitCode::FAILURE);
+            }
+        }
+        (None, Some(_)) | (Some(_), None) => unreachable!(), // clap should prevent this
+        (Some(c), Some(k)) => {
+            if let Err(e) = quiche_config.load_cert_chain_from_pem_file(c.to_str().unwrap()) {
+                eprintln!("Error loading certificate from {:?}: {}", c, e);
+                return Some(ExitCode::FAILURE);
+            };
+
+            if let Err(e) = quiche_config.load_priv_key_from_pem_file(k.to_str().unwrap()) {
+                eprintln!("Error loading private key from {:?}: {}", k, e);
+                return Some(ExitCode::FAILURE);
+            };
+        }
+    };
+
+    None
+}
+
 fn main() -> ExitCode {
     env_logger::builder()
         .default_format_timestamp_nanos(true)
@@ -267,15 +351,9 @@ fn main() -> ExitCode {
             };
         }
         cli::Subcommands::Server { cert, key, oneshot } => {
-            if let Err(e) = quiche_config.load_cert_chain_from_pem_file(cert.to_str().unwrap()) {
-                eprintln!("Error loading certificate from {:?}: {}", cert, e);
-                return ExitCode::FAILURE;
-            };
-
-            if let Err(e) = quiche_config.load_priv_key_from_pem_file(key.to_str().unwrap()) {
-                eprintln!("Error loading private key from {:?}: {}", key, e);
-                return ExitCode::FAILURE;
-            };
+            if let Some(e) = server_set_cert(&mut quiche_config, cert, key) {
+                return e;
+            }
 
             quiche_config.set_application_protos(&perf::ALPN).unwrap();
 
@@ -326,15 +404,9 @@ fn main() -> ExitCode {
             };
         }
         cli::Subcommands::ProxyServer { cert, key } => {
-            if let Err(e) = quiche_config.load_cert_chain_from_pem_file(cert.to_str().unwrap()) {
-                eprintln!("Error loading certificate from {:?}: {}", cert, e);
-                return ExitCode::FAILURE;
-            };
-
-            if let Err(e) = quiche_config.load_priv_key_from_pem_file(key.to_str().unwrap()) {
-                eprintln!("Error loading private key from {:?}: {}", key, e);
-                return ExitCode::FAILURE;
-            };
+            if let Some(e) = server_set_cert(&mut quiche_config, cert, key) {
+                return e;
+            }
 
             quiche_config.set_application_protos(&proxy::ALPN).unwrap();
 

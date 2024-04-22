@@ -153,13 +153,13 @@ pub enum Subcommands {
 
     /// Run quicheperf server
     Server {
-        /// Path to the server certificate
-        #[arg(long)]
-        cert: PathBuf,
+        /// Path to a server certificate. If omitted, a default certificate will be used.
+        #[arg(long, requires = "key")]
+        cert: Option<PathBuf>,
 
-        /// Path to the certificate's private key
-        #[arg(long)]
-        key: PathBuf,
+        /// Path to the certificate's private key. If omitted, a default key will be used.
+        #[arg(long, requires = "cert")]
+        key: Option<PathBuf>,
 
         /// quit after one run
         #[arg(long, short = '1')]
@@ -176,11 +176,11 @@ pub enum Subcommands {
     /// Run proxy server
     ProxyServer {
         /// Path to the server certificate
-        #[arg(long)]
-        cert: PathBuf,
+        #[arg(long, requires = "key")]
+        cert: Option<PathBuf>,
 
         /// Path to the certificate's private key
-        #[arg(long)]
-        key: PathBuf,
+        #[arg(long, requires = "cert")]
+        key: Option<PathBuf>,
     },
 }
