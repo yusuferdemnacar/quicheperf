@@ -39,6 +39,7 @@ mod sendto;
 mod server;
 
 use std::cmp::min;
+use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -156,6 +157,16 @@ pub const fn version() -> &'static str {
     }
 }
 
+fn create_and_write(name: String, data: &[u8]) -> Result<PathBuf, String> {
+    let mut path = std::env::temp_dir();
+    path.push(name);
+    let mut file = File::create(path.as_path())
+        .map_err(|e| format!("Failed to create {:?}: {}", path.to_str(), e.to_string()))?;
+    file.write_all(data)
+        .map_err(|e| format!("Failed writing to {:?}: {}", path.to_str(), e.to_string()))?;
+    Ok(path)
+}
+
 /// A default certificate and key is stored in the binary. Due to the TLS API restrictions, we
 /// write these to a temporary file and let the library read them. The temp files are deleted
 /// when this function returns.
@@ -163,47 +174,37 @@ fn set_default_cert(config: &mut quiche::Config) -> Result<(), String> {
     const STATIC_CERT: &[u8] = include_bytes!("cert.crt");
     const STATIC_KEY: &[u8] = include_bytes!("cert.key");
 
-    let mut tmp_cert = match tempfile::NamedTempFile::new() {
-        Ok(v) => v,
-        Err(e) => return Err(format!("Failed to create tempfile: {}", e.to_string())),
-    };
-    if let Err(e) = tmp_cert.write_all(STATIC_CERT) {
-        return Err(format!("Failed to write to tempfile: {}", e.to_string()));
-    }
+    let cert_path = create_and_write("quicheperf.crt".to_string(), STATIC_CERT)?;
+    let key_path = create_and_write("quicheperf.key".to_string(), STATIC_KEY)?;
 
-    if let Err(e) = config.load_cert_chain_from_pem_file(tmp_cert.path().to_str().unwrap()) {
+    if let Err(e) = config.load_cert_chain_from_pem_file(cert_path.to_str().unwrap()) {
         return Err(format!(
             "Error loading default certificate from {:?}: {}",
-            tmp_cert.path(),
-            e
+            cert_path, e
         ));
     } else {
         info!(
             "Successfully read default cert from temp_file {:?}",
-            tmp_cert.path()
+            cert_path
         );
     };
 
-    let mut tmp_key = match tempfile::NamedTempFile::new() {
-        Ok(v) => v,
-        Err(e) => return Err(format!("Failed to create tempfile: {}", e.to_string())),
-    };
-    if let Err(e) = tmp_key.write_all(STATIC_KEY) {
-        return Err(format!("Failed to write to tempfile: {}", e.to_string()));
-    }
-
-    if let Err(e) = config.load_priv_key_from_pem_file(tmp_key.path().to_str().unwrap()) {
+    if let Err(e) = config.load_priv_key_from_pem_file(key_path.to_str().unwrap()) {
         return Err(format!(
             "Error loading private key from {:?}: {}",
-            tmp_key.path(),
-            e
+            key_path, e
         ));
     } else {
         trace!(
             "Successfully read default key from temp_file {:?}",
-            tmp_key.path()
+            key_path
         );
     };
+
+    std::fs::remove_file(cert_path.clone())
+        .map_err(|e| format!("Failed removing temp file {:?}: {}", cert_path, e))?;
+    std::fs::remove_file(key_path.clone())
+        .map_err(|e| format!("Failed removing temp file {:?}: {}", key_path, e))?;
 
     Ok(())
 }
