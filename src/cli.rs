@@ -80,7 +80,8 @@ pub struct Args {
     #[arg(long, value_enum, global = true)]
     pub scheduler: Option<SchedulerOpts>,
 
-    /// The local address(es) or interface names to connect from
+    /// The local address(es) to connect from. Must include a port (port 0 -> free port chosen automatically).
+    /// Also accepts the name of a network interface (with or without port) to infer the address from.
     #[arg(short, default_value = "[::]:0", global = true)]
     pub local_addrs: Vec<String>,
 

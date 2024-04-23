@@ -170,7 +170,7 @@ pub fn get_ifname_from_ip(addr: std::net::SocketAddr) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn get_ip_from_ifname(ifname: &String) -> Option<SocketAddr> {
+pub fn get_ip_from_ifname(ifname: String, port: u16) -> Option<SocketAddr> {
     let ifaddrs_iter = match nix::ifaddrs::getifaddrs() {
         Ok(v) => v,
         Err(e) => {
@@ -187,11 +187,11 @@ pub fn get_ip_from_ifname(ifname: &String) -> Option<SocketAddr> {
         if let Some(ifaddrstorage) = ifaddr.address {
             if let Some(sockaddr) = ifaddrstorage.as_sockaddr_in() {
                 let ipaddr = Ipv4Addr::from(sockaddr.ip().to_be_bytes());
-                return Some(SocketAddr::new(IpAddr::V4(ipaddr), 0));
+                return Some(SocketAddr::new(IpAddr::V4(ipaddr), port));
             }
             if let Some(sockaddr) = ifaddrstorage.as_sockaddr_in6() {
                 let ipaddr = Ipv6Addr::from(sockaddr.ip().octets());
-                return Some(SocketAddr::new(IpAddr::V6(ipaddr), 0));
+                return Some(SocketAddr::new(IpAddr::V6(ipaddr), port));
             }
         }
     }

@@ -262,32 +262,43 @@ fn main() -> ExitCode {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let local_addrs: Vec<SocketAddr> = args
+    let local_addrs: Result<Vec<SocketAddr>, _> = args
         .local_addrs
         .iter()
         .map(|local_addr| {
             let socket_parse_err = match local_addr.parse::<SocketAddr>() {
-                Ok(v) => return Some(v),
+                Ok(v) => return Ok(v),
                 Err(e) => e,
             };
 
-            match common::get_ip_from_ifname(local_addr) {
+            let mut parts = local_addr.split(":");
+            let intf_name = parts.next().unwrap();
+            let port = match parts.next() {
+                Some(p) => p.parse::<u16>(),
+                None => Ok(0),
+            }
+            .map_err(|e| format!("Failed to parse port from {}: {}", local_addr, e))?;
+
+            match common::get_ip_from_ifname(intf_name.to_string(), port) {
                 Some(v) => {
-                    info!("{}: use local IP {}", local_addr, v);
-                    Some(v)
+                    info!("{}: use {}:{}", local_addr, v, port);
+                    Ok(v)
                 }
-                None => {
-                    eprintln!(
-                        "Could neither convert {} to IP nor find interface IP address: {}",
-                        local_addr, socket_parse_err
-                    );
-                    None
-                }
+                None => Err(format!(
+                    "Could neither convert {} to IP nor find interface IP address: {}",
+                    local_addr, socket_parse_err
+                )),
             }
         })
-        .filter(|v| v.is_some())
-        .map(|v| v.unwrap())
         .collect();
+
+    let local_addrs = match local_addrs {
+        Ok(v) => v,
+        Err(e) => {
+            error!("{}", e);
+            return ExitCode::FAILURE;
+        }
+    };
 
     let scheduler: Box<dyn scheduler::MultipathScheduler> =
         match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
