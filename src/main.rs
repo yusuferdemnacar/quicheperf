@@ -55,7 +55,7 @@ use git_testament::git_testament_macros;
 use clap::Parser;
 use perf::Perf;
 use quiche::scheduler::{self, MultipathScheduler};
-use server::Server;
+use server::{Server, ServerError};
 use std::net::SocketAddr;
 
 use lazy_static::lazy_static;
@@ -378,7 +378,7 @@ fn main() -> ExitCode {
                 }
             };
         }
-        cli::Subcommands::ProxyClient { peer_addrs } => {
+        cli::Subcommands::ProxyClient { peer_addrs, tun } => {
             if args.local_addrs.len() != peer_addrs.len() {
                 eprintln!(
                 "Same number of local and peer addresses expected. One path will be created per pair.\n\
@@ -392,7 +392,7 @@ fn main() -> ExitCode {
 
             let client = client::Client::new(local_addrs, peer_addrs, quiche_config).unwrap();
 
-            return match proxy_client(client, scheduler, terminate) {
+            return match proxy_client(client, scheduler, tun, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
@@ -403,7 +403,7 @@ fn main() -> ExitCode {
                 Ok(_) => ExitCode::SUCCESS,
             };
         }
-        cli::Subcommands::ProxyServer { cert, key } => {
+        cli::Subcommands::ProxyServer { cert, key, tun } => {
             if let Some(e) = server_set_cert(&mut quiche_config, cert, key) {
                 return e;
             }
@@ -419,7 +419,7 @@ fn main() -> ExitCode {
                     }
                 };
 
-            return match proxy_server(server, terminate) {
+            return match proxy_server(server, tun, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
                     eprintln!("Fatal: {}", e);
@@ -639,6 +639,7 @@ fn perf_server(
 fn proxy_client(
     mut client: Client,
     mut scheduler: Box<dyn MultipathScheduler>,
+    tun: String,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), ClientError> {
     let ui = proxy_ui::ProxyUI {};
@@ -649,7 +650,7 @@ fn proxy_client(
     client.register(&poll);
 
     let proxy_token = 128;
-    let mut proxy_client = proxy::Proxy::new("mp0".to_string());
+    let mut proxy_client = proxy::Proxy::new(tun).map_err(|e| ClientError::IOFail(e))?;
     proxy_client.register(proxy_token, &mut poll);
 
     let keep_alive = common::KeepAlive::new(Duration::from_millis(5000));
@@ -756,7 +757,9 @@ fn proxy_client(
         client.probe_paths_if_necessary()?;
 
         if alpn_negotiated {
-            proxy_client.write_tun(&mut client.conn);
+            proxy_client
+                .write_tun(&mut client.conn)
+                .map_err(|e| ClientError::IOFail(e))?;
         }
 
         client.send(&mut scheduler)?;
@@ -774,13 +777,17 @@ fn proxy_client(
     Ok(())
 }
 
-fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), server::ServerError> {
+fn proxy_server(
+    mut server: Server,
+    tun: String,
+    terminate: Arc<AtomicBool>,
+) -> Result<(), server::ServerError> {
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
     server.register(&poll);
 
     let proxy_token = 128;
-    let mut proxy = proxy::Proxy::new("mp0".to_string());
+    let mut proxy = proxy::Proxy::new(tun).map_err(|e| ServerError::Unexpected(e))?;
     proxy.register(proxy_token, &mut poll);
 
     loop {
@@ -857,7 +864,9 @@ fn proxy_server(mut server: Server, terminate: Arc<AtomicBool>) -> Result<(), se
                 }
 
                 for (_, client) in server.clients.iter_mut() {
-                    proxy.write_tun(&mut client.conn);
+                    proxy
+                        .write_tun(&mut client.conn)
+                        .map_err(|e| ServerError::FatalSocket(e))?;
                 }
             }
         }

@@ -9,16 +9,18 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    pub fn new(name: String) -> Proxy {
-        let mut tun = Tun::new(&name, 1)
-            .map_err(|e| panic!("Failed creating tun {}: {}", name, e))
-            .unwrap();
+    pub fn new(name: String) -> Result<Proxy, String> {
+        let mut tun =
+            Tun::new(&name, 1).map_err(|e| format!("Failed creating tun {}: {}", name, e))?;
         info!("Opened {}", tun.name());
 
-        let queue = tun.drain(..).next().unwrap();
-        queue.set_non_blocking(true).unwrap();
+        let queue = tun
+            .drain(..)
+            .next()
+            .ok_or_else(|| "Failed tun drain".to_string())?;
+        queue.set_non_blocking(true).map_err(|e| format!("{}", e))?;
 
-        Proxy { queue }
+        Ok(Proxy { queue })
     }
 
     pub fn register(&mut self, token: usize, poll: &mut mio::Poll) {
@@ -33,7 +35,7 @@ impl Proxy {
     pub fn read_tun(&mut self, conn: &mut quiche::Connection) {
         let mut buf: [u8; 1500] = [0x00; 1500];
         loop {
-            let written = match self.queue.recv(&mut buf) {
+            let read = match self.queue.recv(&mut buf) {
                 Ok(read) => read,
                 // If its a WouldBlock simply short circuit, and re-poll the Queues.
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -44,16 +46,16 @@ impl Proxy {
                 }
             };
 
-            if written == 0 {
+            if read == 0 {
                 return;
             }
 
             trace!(
                 "Sending dgram with {}B, max={:?}B",
-                written,
+                read,
                 conn.dgram_max_writable_len()
             );
-            if let Err(e) = conn.dgram_send(&buf[..written]) {
+            if let Err(e) = conn.dgram_send(&buf[..read]) {
                 match e {
                     quiche::Error::Done => (),
                     quiche::Error::BufferTooShort => error!("Trying dgram_send but {}", e),
@@ -64,17 +66,20 @@ impl Proxy {
         }
     }
 
-    pub fn write_tun(&mut self, conn: &mut quiche::Connection) {
+    pub fn write_tun(&mut self, conn: &mut quiche::Connection) -> Result<(), String> {
         while let Ok(data) = conn.dgram_recv_vec() {
+            let written = self
+                .queue
+                .write(&data)
+                .map_err(|e| format!("Failed writing to tun: {}", e))?;
             trace!(
-                "{} received {} bytes from dgram",
+                "{} received {} B from dgram, wrote {} B to tun",
                 conn.trace_id(),
-                data.len()
+                data.len(),
+                written
             );
-
-            self.queue.write(&data).unwrap();
         }
-        // Ok(())
+        Ok(())
     }
 
     // pub fn run(&self, terminate: Arc<AtomicBool>) {

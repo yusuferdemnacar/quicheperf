@@ -171,6 +171,11 @@ pub enum Subcommands {
         /// The remote address(es) to connect to
         #[arg(short = 'c', required = true, value_parser=resolve_addr)]
         peer_addrs: Vec<SocketAddr>,
+
+        /// Name of the tun interface. Create with:
+        /// ip tuntap add mode tun multi_queue name mp0
+        #[arg(long, required = true)]
+        tun: String,
     },
 
     /// Run proxy server
@@ -182,5 +187,10 @@ pub enum Subcommands {
         /// Path to the certificate's private key
         #[arg(long, requires = "cert")]
         key: Option<PathBuf>,
+
+        /// Name of the tun interface. Create with:
+        /// ip tuntap add mode tun multi_queue name mp0
+        #[arg(long, required = true)]
+        tun: String,
     },
 }
