@@ -415,7 +415,12 @@ fn main() -> ExitCode {
                 Ok(_) => ExitCode::SUCCESS,
             };
         }
-        cli::Subcommands::ProxyServer { cert, key, tun } => {
+        cli::Subcommands::ProxyServer {
+            cert,
+            key,
+            tun,
+            oneshot,
+        } => {
             if let Some(e) = server_set_cert(&mut quiche_config, cert, key) {
                 return e;
             }
@@ -431,7 +436,7 @@ fn main() -> ExitCode {
                     }
                 };
 
-            return match proxy_server(server, tun, terminate) {
+            return match proxy_server(server, tun, oneshot, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
                     eprintln!("Fatal: {}", e);
@@ -739,7 +744,9 @@ fn proxy_client(
         for event in &events {
             let token: usize = event.token().into();
             if token == proxy_token {
-                proxy_client.read_tun(&mut client.conn);
+                if client.conn.is_established() {
+                    proxy_client.read_tun(&mut client.conn);
+                }
             } else {
                 client.read(event)?;
             }
@@ -792,6 +799,7 @@ fn proxy_client(
 fn proxy_server(
     mut server: Server,
     tun: String,
+    oneshot: bool,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), server::ServerError> {
     let mut poll = mio::Poll::new().unwrap();
@@ -855,7 +863,9 @@ fn proxy_server(
             if token == proxy_token {
                 // TODO: sent the packet to the first client, improve this
                 for (_, client) in server.clients.iter_mut() {
-                    proxy.read_tun(&mut client.conn);
+                    if client.conn.is_established() {
+                        proxy.read_tun(&mut client.conn);
+                    }
                 }
             } else {
                 // Writable mio notifications disabled for now
@@ -883,6 +893,11 @@ fn proxy_server(
             }
         }
         server.send()?;
-        server.garbage_collect();
+
+        let client_collected = server.garbage_collect();
+        if oneshot && client_collected {
+            info!("oneshot mode, exit");
+            return Ok(());
+        }
     }
 }

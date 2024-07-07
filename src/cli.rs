@@ -193,5 +193,9 @@ pub enum Subcommands {
         /// ip tuntap add mode tun multi_queue name mp0
         #[arg(long, required = true)]
         tun: String,
+
+        /// quit after one run
+        #[arg(long, short = '1')]
+        oneshot: bool,
     },
 }
