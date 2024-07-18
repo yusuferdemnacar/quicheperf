@@ -20,7 +20,7 @@ FROM debian:latest
 
 LABEL org.opencontainers.image.authors="Hendrik Cech <hendrik.cech@tum.de>"
 
-RUN apt-get update && apt-get install -y ca-certificates iproute2 iptables jq iputils-ping traceroute tcpdump && \
+RUN apt-get update && apt-get install -y ca-certificates iproute2 iptables jq iputils-ping traceroute tcpdump netcat-openbsd && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=build \
