@@ -217,7 +217,7 @@ pub fn set_qlog(
     scid: String,
     role: &str,
     peer_addr: Option<String>,
-) {
+) -> Result<(), String> {
     if let Some(dir) = std::env::var_os("QLOGDIR") {
         let now_utc = OffsetDateTime::now_utc();
         let compact_fmt =
@@ -230,12 +230,12 @@ pub fn set_qlog(
         path.push(filename);
 
         let writer = match std::fs::File::create(&path) {
-            Ok(f) => std::io::BufWriter::new(f),
-            Err(e) => panic!(
+            Ok(f) => Ok(std::io::BufWriter::new(f)),
+            Err(e) => Err(format!(
                 "Error creating qlog file attempted path was {:?}: {}",
                 path, e
-            ),
-        };
+            )),
+        }?;
         println!("Writing qlog to {}", path.display());
 
         let mut writer = match Encoder::new(writer, 0) {
@@ -261,6 +261,8 @@ pub fn set_qlog(
             quiche::QlogLevel::Extra,
         );
     }
+
+    Ok(())
 }
 
 // pub fn qlog_metadata(conn: &mut quiche::Connection, tc: &TestConfig, config: &quiche::Config) {

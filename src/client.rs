@@ -205,7 +205,11 @@ impl Client {
                     .intersperse(",".to_string())
                     .collect(),
             );
-            common::set_qlog(&mut conn, format!("{:?}", scid), "client", peer_addrs_str);
+            if let Err(e) =
+                common::set_qlog(&mut conn, format!("{:?}", scid), "client", peer_addrs_str)
+            {
+                return Err(ClientError::IOFail(e));
+            };
             // common::qlog_metadata(&mut conn, &tc, &config);
         }
 
@@ -540,6 +544,7 @@ impl Client {
             // if !self.conn.qlog_writer_drained() {
             //     println!("Waiting for the qlog event queue to be drained");
             // }
+            // Sleep until all qlog events have been written to disk
             self.conn.await_qlog_writer_drained();
         }
 

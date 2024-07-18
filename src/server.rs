@@ -24,6 +24,7 @@ pub enum ServerError {
 enum PacketRecvAction {
     NotInitial,
     VersionNegotiation,
+    IOFail(String),
 }
 
 /// See `SocketState` in client.rs
@@ -502,6 +503,7 @@ impl Server {
                         }
                         return Ok(());
                     }
+                    PacketRecvAction::IOFail(e) => return Err(ServerError::FatalSocket(e)),
                 },
             };
 
@@ -579,7 +581,10 @@ impl Server {
 
             // Only bother with qlog if the user specified it.
             #[cfg(feature = "qlog")]
-            common::set_qlog(&mut conn, format!("{:?}", &hdr.scid), "server", None);
+            if let Err(e) = common::set_qlog(&mut conn, format!("{:?}", &hdr.scid), "server", None)
+            {
+                return Err(PacketRecvAction::IOFail(e));
+            };
 
             let client_id = self.next_client_id;
 
