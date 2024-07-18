@@ -646,6 +646,12 @@ fn perf_server(
         let client_collected = server.garbage_collect();
         if oneshot && client_collected {
             info!("oneshot mode, exit");
+            // Sleep until all qlog events have been written to disk
+            for (_, client) in server.clients.iter_mut() {
+                client.conn.await_qlog_writer_drained();
+            }
+            // For some reason, the qlog is often not completly written if we don't sleep for a bit before terminating
+            std::thread::sleep(Duration::from_millis(100));
             break;
         }
     }
@@ -897,6 +903,13 @@ fn proxy_server(
         let client_collected = server.garbage_collect();
         if oneshot && client_collected {
             info!("oneshot mode, exit");
+            // Sleep until all qlog events have been written to disk
+            for (_, client) in server.clients.iter_mut() {
+                client.conn.await_qlog_writer_drained();
+            }
+            // For some reason, the qlog is often not completly written if we don't sleep for a bit before terminating
+            std::thread::sleep(Duration::from_millis(100));
+
             return Ok(());
         }
     }
