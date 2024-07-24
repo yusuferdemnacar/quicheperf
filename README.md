@@ -18,9 +18,11 @@ cargo build --release quicheperf
 Usage: quicheperf [OPTIONS] <COMMAND>
 
 Commands:
-  client  Run quicheperf client
-  server  Run quicheperf server
-  help    Print this message or the help of the given subcommand(s)
+  client        Run quicheperf client
+  server        Run quicheperf server
+  proxy-client  Run proxy client
+  proxy-server  Run proxy server
+  help          Print this message or the help of the given subcommand(s)
 
 Options:
   -p, --password <PASSWORD>
@@ -30,9 +32,9 @@ Options:
       --mp <MULTIPATH>
           Enable or disable multipath (Automatically enabled if more than one local_addr is present) [default: false]
       --scheduler <SCHEDULER>
-          Set the multipath scheduler of this peer [possible values: blest, min-rtt]
+          Set the multipath scheduler of this peer [possible values: blest, min-rtt, round-robin]
   -l <LOCAL_ADDRS>
-          The local address(es) to connect from [default: 0.0.0.0:0]
+          The local address(es) to connect from. Must include a port (port 0 -> free port chosen automatically). Also accepts the name of a network interface (with or without port) to infer the address from [default: [::]:0]
       --max-data <MAX_DATA>
           Initial connection-wide flow control limit [default: 25165824]
       --max-stream-data <MAX_STREAM_DATA>
@@ -57,14 +59,20 @@ Options:
           Print version
 ```
 
-# Example Usage
+# Environment Variables
+- `RUST_LOG`: set this to one of `trace`, `debug`, or `info` to get more detailed logging output.
+- `QLOGDIR`: specify a path where each QUIC connection will be logged to a file in the [qlog](https://datatracker.ietf.org/doc/draft-ietf-quic-qlog-main-schema/) format.
+- `SSLKEYLOGFILE`: if this variable is set, the TLS secrets are logged this file; useful for debugging with Wireshark.
+
+# Example Usage: Throughput Test
+
 ```
 # Build quicheperf with `cargo build --release --bin quicheperf` and run `./target/release/quicheperf`
 # or use cargo wrapper: `cargo run --release --bin quicheperf`
 
-$ cargo run --release --bin quicheperf -- server --cert src/cert.crt --key src/cert.key -l 0.0.0.0:9999 &
+$ cargo run --release  -- server --cert src/cert.crt --key src/cert.key -l 0.0.0.0:9999 &
 
-$ cargo run --release --bin quicheperf -- client -c 127.0.0.1:9999
+$ cargo run --release -- client -c 127.0.0.1:9999
 SP test for 10s from 0.0.0.0:0->127.0.0.1:9999
 | sec | P0 Mbps    | P0 Lost/Total (sp) |
 |   0 |       0.01 |     0 /     4 ( 0) |
