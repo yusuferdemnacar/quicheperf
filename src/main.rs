@@ -32,11 +32,10 @@ mod cli;
 mod client;
 mod common;
 mod perf;
-mod perf_ui;
 mod proxy;
-mod proxy_ui;
 mod sendto;
 mod server;
+mod ui;
 
 use std::cmp::min;
 use std::fs::File;
@@ -58,6 +57,7 @@ use perf::Perf;
 use quiche::scheduler::{self, MultipathScheduler};
 use server::{Server, ServerError};
 use std::net::SocketAddr;
+use ui::UIExecutor;
 
 use lazy_static::lazy_static;
 
@@ -458,8 +458,9 @@ fn perf_client(
     mut psu: PathStatusUpdater,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), ClientError> {
-    let mut ui = perf_ui::PerfUI::new(tc.client_sending);
-    ui.new_test(&tc).ok();
+    let perf_ui = ui::PerfUI::new(tc.client_sending);
+    perf_ui.new_test(&tc).ok();
+    let mut ui = UIExecutor::new(Box::new(perf_ui));
 
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
@@ -665,8 +666,8 @@ fn proxy_client(
     tun: String,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), ClientError> {
-    let ui = proxy_ui::ProxyUI {};
-    // ui.new_test(&tc).ok();
+    let proxy_ui = ui::ProxyUI::new();
+    let mut ui = UIExecutor::new(Box::new(proxy_ui));
 
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
@@ -680,6 +681,8 @@ fn proxy_client(
 
     let mut alpn_negotiated: bool = false;
 
+    let start = Instant::now();
+
     // Setup proxy protocol
     client.connect(&mut scheduler)?;
 
@@ -689,9 +692,10 @@ fn proxy_client(
             client.conn.close(true, 0x1, b"user terminated").ok();
         }
 
-        // if alpn_negotiated {
-        //     ui.update(&client.conn, &mut scheduler).ok();
-        // }
+        if alpn_negotiated {
+            ui.update(&client.conn, &mut scheduler, start.elapsed())
+                .ok();
+        }
 
         let ui_timeout = ui.timeout();
         let keep_alive_timeout = keep_alive.timeout(&client.conn);
@@ -792,9 +796,7 @@ fn proxy_client(
 
     client.on_close()?;
 
-    // if protocol.is_some() {
-    //     ui.print_summary(&client.conn).ok();
-    // }
+    ui.print_summary(&client.conn, start.elapsed()).ok();
 
     // If the QUIC connection was closed
     terminate.store(true, Ordering::SeqCst);
