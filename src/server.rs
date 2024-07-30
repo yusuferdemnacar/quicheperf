@@ -294,7 +294,7 @@ impl Server {
         // Set SO_TXTIME socket option on the listening UDP socket for pacing
         // outgoing packets.
         let pacing = true;
-        let mut enable_gso = true;
+        let mut enable_gso = false;
 
         let mut addrs = Vec::new();
         for src_addr in local_addrs {

@@ -477,8 +477,12 @@ fn perf_client(
         }
 
         if let Some(ref p) = protocol {
-            ui.update(&client.conn, &mut scheduler, p.test_duration_elapsed())
-                .ok();
+            ui.update(
+                &client.conn,
+                Some(&mut scheduler),
+                p.test_duration_elapsed(),
+            )
+            .ok();
         }
 
         let ui_timeout = ui.timeout();
@@ -693,7 +697,7 @@ fn proxy_client(
         }
 
         if alpn_negotiated {
-            ui.update(&client.conn, &mut scheduler, start.elapsed())
+            ui.update(&client.conn, Some(&mut scheduler), start.elapsed())
                 .ok();
         }
 
@@ -810,6 +814,11 @@ fn proxy_server(
     oneshot: bool,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), server::ServerError> {
+    let proxy_ui = ui::ProxyUI::new();
+    let mut ui = UIExecutor::new(Box::new(proxy_ui));
+    let mut current_ui_client = 0;
+    let start = Instant::now();
+
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
     server.register(&poll);
@@ -829,13 +838,17 @@ fn proxy_server(
         }
 
         // server.poll(&mut events)?;
-        let mut timeout = server
+        let conn_timeout = server
             .clients
             .values()
             .filter_map(|c| c.conn.timeout())
             .min();
-        if let Some(t) = timeout {
-            timeout = Some(min(Duration::from_secs(5), t));
+        let ui_timeout = ui.timeout();
+        let mut timeout = None;
+        let mut wait_for_ui_timeout = false;
+        if let Some(t) = conn_timeout {
+            wait_for_ui_timeout = ui_timeout < t;
+            timeout = Some(min(min(Duration::from_secs(5), t), ui_timeout));
         }
         let poll_start = std::time::Instant::now();
         if let Err(e) = poll.poll(&mut events, timeout) {
@@ -847,7 +860,8 @@ fn proxy_server(
         let conn_timeout_expired = events.is_empty()
             && timeout.map_or(false, |t| {
                 t.saturating_sub(poll_duration) == std::time::Duration::ZERO
-            });
+            })
+            && !wait_for_ui_timeout;
         if conn_timeout_expired {
             server
                 .clients
@@ -901,6 +915,14 @@ fn proxy_server(
             }
         }
         server.send()?;
+
+        if let Some((key, client)) = server.clients.iter().next() {
+            if *key != current_ui_client {
+                ui.reset();
+                current_ui_client = *key;
+            }
+            ui.update(&client.conn, None, start.elapsed()).ok();
+        }
 
         let client_collected = server.garbage_collect();
         if oneshot && client_collected {

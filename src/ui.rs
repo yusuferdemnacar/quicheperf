@@ -213,14 +213,19 @@ impl<'a> UIExecutor<'a> {
     pub fn update(
         &mut self,
         conn: &quiche::Connection,
-        scheduler: &mut Box<dyn MultipathScheduler>,
+        scheduler: Option<&mut Box<dyn MultipathScheduler>>,
         elapsed: Duration,
     ) -> Result<()> {
         let update_due = self.last_update.map_or(true, |v| v.elapsed() > UPDATE_FREQ);
         if !update_due || conn.is_closed() {
             return Ok(());
         }
-        let scheduled = scheduler.pop_scheduling_decisions();
+
+        let scheduled = if let Some(s) = scheduler {
+            s.pop_scheduling_decisions()
+        } else {
+            SchedulingDecisions::default()
+        };
 
         self.ui.print_update(conn, scheduled, elapsed)?;
 
@@ -237,6 +242,10 @@ impl<'a> UIExecutor<'a> {
     pub fn print_summary(&self, conn: &quiche::Connection, elapsed: Duration) -> Result<()> {
         self.ui.print_summary(conn, elapsed)
     }
+
+    pub fn reset(&mut self) {
+        self.ui.reset();
+    }
 }
 
 pub trait UI {
@@ -250,6 +259,8 @@ pub trait UI {
     ) -> Result<()>;
 
     fn print_summary(&self, conn: &quiche::Connection, elapsed: Duration) -> Result<()>;
+
+    fn reset(&mut self);
 }
 
 #[derive(Debug)]
@@ -481,6 +492,10 @@ impl UI for PerfUI {
 
         Ok(())
     }
+
+    fn reset(&mut self) {
+        self.stats = StatsManager::new();
+    }
 }
 
 pub struct ProxyUI {
@@ -561,5 +576,9 @@ impl UI for ProxyUI {
 
     fn print_summary(&self, _conn: &quiche::Connection, _elapsed: Duration) -> Result<()> {
         Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.stats = StatsManager::new();
     }
 }
