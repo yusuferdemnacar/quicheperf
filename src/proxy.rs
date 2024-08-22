@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Read, Write};
 
 use riptun::{Queue, Tun};
 
@@ -30,11 +30,15 @@ impl Proxy {
             .unwrap();
     }
 
-    // TODO: read all available packets not just one
-    // TODO: use read_vectored?
     pub fn read_tun(&mut self, conn: &mut quiche::Connection) {
         let mut buf: [u8; 1500] = [0x00; 1500];
         loop {
+            if conn.is_dgram_send_queue_full() {
+                trace!("read_tun: not reading since dgram_send_queue is full");
+                return;
+            }
+
+            // TODO: use read_vectored?
             let read = match self.queue.recv(&mut buf) {
                 Ok(read) => read,
                 // If its a WouldBlock simply short circuit, and re-poll the Queues.

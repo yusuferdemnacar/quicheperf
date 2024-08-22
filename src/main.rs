@@ -119,7 +119,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     config.enable_hystart(args.hystart);
     config.enable_pacing(true);
 
-    config.enable_dgram(true, 1000, 1000);
+    config.enable_dgram(true, 100, 1000);
 
     config.set_max_connection_window(25_165_824);
     config.set_max_stream_window(16_777_216);
