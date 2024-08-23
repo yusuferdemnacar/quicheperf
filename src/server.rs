@@ -319,11 +319,11 @@ impl Server {
             #[cfg(target_os = "linux")]
             {
                 match common::set_socket_buf_size(&socket, common::UDPBufType::Rcv) {
-                    Ok(v) => info!("Set the UDP rcv buf size to {}", v),
+                    Ok(v) => trace!("Set the UDP rcv buf size to {}", v),
                     Err(e) => warn!("{}", e),
                 };
                 match common::set_socket_buf_size(&socket, common::UDPBufType::Snd) {
-                    Ok(v) => info!("Set the UDP snd buf size to {}", v),
+                    Ok(v) => trace!("Set the UDP snd buf size to {}", v),
                     Err(e) => warn!("{}", e),
                 };
             }
@@ -334,7 +334,6 @@ impl Server {
             addrs.push(local_addr);
 
             info!("listening on {:}", local_addr);
-            println!("listening on {:?}", src_addr);
         }
 
         let rng = SystemRandom::new();
@@ -748,7 +747,7 @@ impl Server {
             .iter()
             .filter(|(_, client)| client.conn.is_closed())
             .map(|(cid, client)| {
-                println!(
+                info!(
                     "{} connection collected {:?} {:?}",
                     client.conn.trace_id(),
                     client.conn.stats(),

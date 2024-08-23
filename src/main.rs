@@ -53,6 +53,12 @@ use common::PathStatusUpdater;
 use git_testament::git_testament_macros;
 
 use clap::Parser;
+use log::LevelFilter;
+use log4rs::append::console::{ConsoleAppender, Target};
+use log4rs::append::file::FileAppender;
+use log4rs::config::{Appender, Root};
+use log4rs::encode::pattern::PatternEncoder;
+use log4rs::filter::threshold::ThresholdFilter;
 use perf::Perf;
 use quiche::scheduler::{self, MultipathScheduler};
 use server::{Server, ServerError};
@@ -74,7 +80,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     let mut config = match quiche::Config::new(quiche::PROTOCOL_VERSION) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Could not create quiche config: {}", e);
+            error!("Could not create quiche config: {}", e);
             return Err(ExitCode::FAILURE);
         }
     };
@@ -112,7 +118,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
         config.set_constant_cwnd(cwnd);
         info!("Set constant cwnd={}B", cwnd);
     } else if let Err(e) = config.set_cc_algorithm_name(args.congestion.as_ref()) {
-        eprintln!("Could not set CCA {}: {}", args.congestion, e);
+        error!("Could not set CCA {}: {}", args.congestion, e);
         return Err(ExitCode::FAILURE);
     };
 
@@ -134,7 +140,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     config.flow_control_config.reactive_rtt_trigger_factor = args.fc_reactive_rtt_trigger_factor;
 
     if let Err(e) = config.set_fc_autotune_strategy(&args.fc_autotune_strategy) {
-        eprintln!(
+        error!(
             "Error setting flow control autotune strategy {}: {}",
             args.fc_autotune_strategy, e
         );
@@ -217,7 +223,6 @@ fn server_set_cert(
     match (cert, key) {
         (None, None) => {
             if let Err(e) = set_default_cert(quiche_config) {
-                eprintln!("{}", e);
                 error!("{}", e);
                 return Some(ExitCode::FAILURE);
             }
@@ -225,12 +230,12 @@ fn server_set_cert(
         (None, Some(_)) | (Some(_), None) => unreachable!(), // clap should prevent this
         (Some(c), Some(k)) => {
             if let Err(e) = quiche_config.load_cert_chain_from_pem_file(c.to_str().unwrap()) {
-                eprintln!("Error loading certificate from {:?}: {}", c, e);
+                error!("Error loading certificate from {:?}: {}", c, e);
                 return Some(ExitCode::FAILURE);
             };
 
             if let Err(e) = quiche_config.load_priv_key_from_pem_file(k.to_str().unwrap()) {
-                eprintln!("Error loading private key from {:?}: {}", k, e);
+                error!("Error loading private key from {:?}: {}", k, e);
                 return Some(ExitCode::FAILURE);
             };
         }
@@ -239,15 +244,54 @@ fn server_set_cert(
     None
 }
 
-fn main() -> ExitCode {
-    env_logger::builder()
-        .default_format_timestamp_nanos(true)
-        .init();
+fn setup_logger(console_log_level: u8, logfile: &Option<String>) {
+    let mut config = log4rs::Config::builder();
+    let mut root = Root::builder();
 
+    let console_level_filter = match console_log_level {
+        0 => LevelFilter::Info,
+        1 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    };
+
+    let console = ConsoleAppender::builder()
+        .target(Target::Stderr)
+        .encoder(Box::new(PatternEncoder::new(
+            "[{d(%H:%M:%S)} {h({l})}] {m}{n}",
+        ))) // {M} module
+        .build();
+
+    config = config.appender(
+        Appender::builder()
+            .filter(Box::new(ThresholdFilter::new(console_level_filter)))
+            .build("console", Box::new(console)),
+    );
+
+    root = root.appender("console");
+
+    if let Some(path) = logfile {
+        let file = FileAppender::builder()
+            .encoder(Box::new(PatternEncoder::new("[{d} {l} {M}] {m}{n}")))
+            .build(path)
+            .unwrap();
+
+        config = config.appender(Appender::builder().build("file", Box::new(file)));
+
+        root = root.appender("file");
+    }
+
+    let config = config.build(root.build(LevelFilter::Trace)).unwrap();
+
+    let _handle = log4rs::init_config(config).unwrap();
+}
+
+fn main() -> ExitCode {
     lazy_static::initialize(&UTC_OFFSET);
 
     // Parse CLI parameters.
     let args = cli::Args::parse();
+
+    setup_logger(args.verbose, &args.logfile);
 
     let mut quiche_config = match make_quiche_config(&args) {
         Ok(v) => v,
@@ -317,7 +361,7 @@ fn main() -> ExitCode {
             path_statuses,
         } => {
             if args.local_addrs.len() != peer_addrs.len() {
-                eprintln!(
+                error!(
                 "Same number of local and peer addresses expected. One path will be created per pair.\n\
                 local_addrs={:?}, peer_addrs={:?}",
                 args.local_addrs, peer_addrs
@@ -333,7 +377,7 @@ fn main() -> ExitCode {
             ) {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("Path status updater: {}", e);
+                    error!("Path status updater: {}", e);
                     return ExitCode::FAILURE;
                 }
             };
@@ -355,7 +399,7 @@ fn main() -> ExitCode {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
-                    eprintln!("{}", e);
+                    error!("{}", e);
                     ExitCode::FAILURE
                 }
 
@@ -373,7 +417,7 @@ fn main() -> ExitCode {
                 match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
                     Ok(v) => v,
                     Err(e) => {
-                        eprintln!("Failed to set up server: {:?}", e);
+                        error!("Failed to set up server: {:?}", e);
                         return ExitCode::FAILURE;
                     }
                 };
@@ -381,18 +425,18 @@ fn main() -> ExitCode {
             return match perf_server(server, oneshot, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
-                    eprintln!("Fatal: {}", e);
+                    error!("Fatal: {}", e);
                     ExitCode::FAILURE
                 }
                 Err(server::ServerError::Unexpected(e)) => {
-                    eprintln!("Unexpected: {}", e);
+                    error!("Unexpected: {}", e);
                     ExitCode::FAILURE
                 }
             };
         }
         cli::Subcommands::ProxyClient { peer_addrs, tun } => {
             if args.local_addrs.len() != peer_addrs.len() {
-                eprintln!(
+                error!(
                 "Same number of local and peer addresses expected. One path will be created per pair.\n\
                 local_addrs={:?}, peer_addrs={:?}",
                 args.local_addrs, peer_addrs
@@ -408,7 +452,7 @@ fn main() -> ExitCode {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
-                    eprintln!("{}", e);
+                    error!("{}", e);
                     ExitCode::FAILURE
                 }
 
@@ -431,7 +475,7 @@ fn main() -> ExitCode {
                 match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
                     Ok(v) => v,
                     Err(e) => {
-                        eprintln!("Failed to set up server: {:?}", e);
+                        error!("Failed to set up server: {:?}", e);
                         return ExitCode::FAILURE;
                     }
                 };
@@ -439,11 +483,11 @@ fn main() -> ExitCode {
             return match proxy_server(server, tun, oneshot, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
-                    eprintln!("Fatal: {}", e);
+                    error!("Fatal: {}", e);
                     ExitCode::FAILURE
                 }
                 Err(server::ServerError::Unexpected(e)) => {
-                    eprintln!("Unexpected: {}", e);
+                    error!("Unexpected: {}", e);
                     ExitCode::FAILURE
                 }
             };

@@ -63,6 +63,14 @@ fn parse_path_status(s: &str) -> Result<(std::time::Duration, usize, PathStatus)
 #[derive(Parser, Debug)]
 #[command(author, about, long_about = None, version = super::version())]
 pub struct Args {
+    /// Log to file with level trace
+    #[arg(long, global = true)]
+    pub logfile: Option<String>,
+
+    /// Set the console logging level: default -> info, -v -> debug, -vv -> trace
+    #[arg(short = 'v', action = ArgAction::Count, global = true)]
+    pub verbose: u8,
+
     /// Password required to start test
     #[arg(short, long, global = true)]
     pub password: Option<String>,

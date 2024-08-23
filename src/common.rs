@@ -236,7 +236,7 @@ pub fn set_qlog(
                 path, e
             )),
         }?;
-        println!("Writing qlog to {}", path.display());
+        info!("Writing qlog to {}", path.display());
 
         let mut writer = match Encoder::new(writer, 0) {
             Ok(v) => v,

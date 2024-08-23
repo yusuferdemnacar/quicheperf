@@ -60,7 +60,6 @@ Options:
 ```
 
 # Environment Variables
-- `RUST_LOG`: set this to one of `trace`, `debug`, or `info` to get more detailed logging output.
 - `QLOGDIR`: specify a path where each QUIC connection will be logged to a file in the [qlog](https://datatracker.ietf.org/doc/draft-ietf-quic-qlog-main-schema/) format.
 - `SSLKEYLOGFILE`: if this variable is set, the TLS secrets are logged this file; useful for debugging with Wireshark.
 

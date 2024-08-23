@@ -139,18 +139,18 @@ impl Client {
                 let ifname = common::get_ifname_from_ip(local_addr);
                 if let Some(ifname) = ifname {
                     if let Err(e) = common::bind_socket_to_if(&socket, &ifname) {
-                        eprintln!("{}: unable to bind {}: {}", ifname, local_addr, e);
+                        error!("{}: unable to bind {}: {}", ifname, local_addr, e);
                     } else {
-                        println!("{}: bind {}", ifname, local_addr);
+                        trace!("{}: bind {}", ifname, local_addr);
                     }
                 }
 
                 match common::set_socket_buf_size(&socket, common::UDPBufType::Rcv) {
-                    Ok(v) => info!("Set the UDP rcv buf size to {}", v),
+                    Ok(v) => trace!("Set the UDP rcv buf size to {}", v),
                     Err(e) => warn!("{}", e),
                 };
                 match common::set_socket_buf_size(&socket, common::UDPBufType::Snd) {
-                    Ok(v) => info!("Set the UDP snd buf size to {}", v),
+                    Ok(v) => trace!("Set the UDP snd buf size to {}", v),
                     Err(e) => warn!("{}", e),
                 };
             }
@@ -535,7 +535,6 @@ impl Client {
                     local_addr, socket.would_block_cntr
                 );
                 warn!("{}", msg);
-                println!("{}", msg);
             }
         }
 
