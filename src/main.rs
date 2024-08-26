@@ -882,18 +882,25 @@ fn proxy_server(
         }
 
         // server.poll(&mut events)?;
+        let max_timeout = Duration::from_secs(5);
         let conn_timeout = server
             .clients
             .values()
             .filter_map(|c| c.conn.timeout())
             .min();
         let ui_timeout = ui.timeout();
-        let mut timeout = None;
-        let mut wait_for_ui_timeout = false;
-        if let Some(t) = conn_timeout {
-            wait_for_ui_timeout = ui_timeout < t;
-            timeout = Some(min(min(Duration::from_secs(5), t), ui_timeout));
-        }
+        let proxy_timeout = proxy.timeout();
+
+        let timeout = Some(min(
+            min(conn_timeout.unwrap_or(max_timeout), ui_timeout),
+            proxy_timeout,
+        ));
+        let wait_for_conn_timeout = if let Some(t) = conn_timeout {
+            t <= ui_timeout && t <= proxy_timeout
+        } else {
+            false
+        };
+
         let poll_start = std::time::Instant::now();
         if let Err(e) = poll.poll(&mut events, timeout) {
             if e.kind() != std::io::ErrorKind::Interrupted {
@@ -905,7 +912,7 @@ fn proxy_server(
             && timeout.map_or(false, |t| {
                 t.saturating_sub(poll_duration) == std::time::Duration::ZERO
             })
-            && !wait_for_ui_timeout;
+            && wait_for_conn_timeout;
         if conn_timeout_expired {
             server
                 .clients

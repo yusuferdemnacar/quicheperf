@@ -11,7 +11,11 @@ pub const ALPN: [&[u8]; 2] = [b"quicheproxy", b"quicheproxy-00"];
 pub struct Proxy {
     queue: Queue,
 
-    flow_handler: FlowHandler,
+    flow_handler: Box<dyn FlowHandler>,
+
+    // TODO: must be per-flow
+    // The id of the next outgoing packet
+    next_send_id: u64,
 }
 
 impl Proxy {
@@ -26,9 +30,13 @@ impl Proxy {
             .ok_or_else(|| "Failed tun drain".to_string())?;
         queue.set_non_blocking(true).map_err(|e| format!("{}", e))?;
 
+        let fh = ReorderingFlowHandler::new();
+        // let fh = NoopFlowHandler::new();
+
         Ok(Proxy {
+            next_send_id: 0,
             queue,
-            flow_handler: FlowHandler::new(),
+            flow_handler: Box::new(fh),
         })
     }
 
@@ -37,6 +45,11 @@ impl Proxy {
         poll.registry()
             .register(&mut self.queue, mio::Token(token), mio::Interest::READABLE)
             .unwrap();
+    }
+
+    /// Returns the time until a buffered packet must be forwarded
+    pub fn timeout(&self) -> Duration {
+        self.flow_handler.timeout(Instant::now())
     }
 
     /// Read packet from the tun interface if quiche can queue another datagram
@@ -65,15 +78,15 @@ impl Proxy {
             }
 
             // TODO: get FlowHandler for the specific flow
-            let fh = &mut self.flow_handler;
+            // let fh = &mut self.flow_handler;
 
             // Write packet id
-            buf[..8].copy_from_slice(&fh.next_send_id.to_le_bytes());
+            buf[..8].copy_from_slice(&self.next_send_id.to_le_bytes());
             read += 8;
 
             debug!(
                 "Sending dgram {} with {}B, max={:?}B",
-                fh.next_send_id,
+                self.next_send_id,
                 read,
                 conn.dgram_max_writable_len()
             );
@@ -85,7 +98,7 @@ impl Proxy {
                     _ => panic!("Unexpected dgram error: {}", e),
                 }
             } else {
-                fh.next_send_id += 1
+                self.next_send_id += 1
             }
         }
     }
@@ -112,8 +125,8 @@ impl Proxy {
 
         // TODO: get a sensible FlowHander or iterate over all
         let fh = &mut self.flow_handler;
-        while let Some((_id, packet)) = fh.emit(now) {
-            trace!("Emit packet");
+        while let Some((id, packet)) = fh.emit(now) {
+            trace!("Emit packet {}", id);
             let _written = self
                 .queue
                 .write(&packet)
@@ -125,10 +138,46 @@ impl Proxy {
 
 const TIMEOUT: std::time::Duration = Duration::from_millis(30);
 
-struct FlowHandler {
-    // The id of the next outgoing packet
-    next_send_id: u64,
+trait FlowHandler {
+    fn recv(&mut self, id: u64, packet: Vec<u8>, now: Instant);
 
+    fn timeout(&self, now: Instant) -> Duration;
+
+    fn emit(&mut self, now: Instant) -> Option<(u64, Vec<u8>)>;
+}
+
+struct NoopFlowHandler {
+    packets: VecDeque<(u64, Vec<u8>)>,
+}
+
+impl NoopFlowHandler {
+    #[allow(dead_code)]
+    fn new() -> Self {
+        NoopFlowHandler {
+            packets: VecDeque::with_capacity(100),
+        }
+    }
+}
+
+impl FlowHandler for NoopFlowHandler {
+    fn recv(&mut self, id: u64, packet: Vec<u8>, _now: Instant) {
+        self.packets.push_back((id, packet))
+    }
+
+    fn timeout(&self, _now: Instant) -> Duration {
+        if self.packets.is_empty() {
+            Duration::MAX
+        } else {
+            Duration::ZERO
+        }
+    }
+
+    fn emit(&mut self, _now: Instant) -> Option<(u64, Vec<u8>)> {
+        self.packets.pop_front()
+    }
+}
+
+struct ReorderingFlowHandler {
     // All packets up to this id will be forwarded immediately
     low_id: u64,
 
@@ -141,17 +190,18 @@ struct FlowHandler {
     packets: BTreeMap<u64, Vec<u8>>,
 }
 
-impl FlowHandler {
+impl ReorderingFlowHandler {
     fn new() -> Self {
         Self {
-            next_send_id: 0,
             low_id: 0,
             high_id: 0,
             packets: BTreeMap::new(),
-            timeouts: VecDeque::new(),
+            timeouts: VecDeque::with_capacity(5),
         }
     }
+}
 
+impl FlowHandler for ReorderingFlowHandler {
     fn recv(&mut self, id: u64, packet: Vec<u8>, now: Instant) {
         // What if id < low_id?
         if id == self.high_id + 1 || id == 0 {
@@ -173,9 +223,26 @@ impl FlowHandler {
         self.packets.insert(id, packet);
     }
 
+    fn timeout(&self, now: Instant) -> Duration {
+        match self.timeouts.front() {
+            Some((_, timeout)) => match timeout.checked_duration_since(now) {
+                Some(timeout) => timeout,
+                None => Duration::ZERO,
+            },
+            None => Duration::MAX,
+        }
+    }
+
     fn emit(&mut self, now: Instant) -> Option<(u64, Vec<u8>)> {
         // Check if a timeout expired
         if let Some((id, timeout)) = self.timeouts.front() {
+            trace!(
+                "emit: {:?} until timeout; low_id would {} -> {}; {} timeouts pending",
+                timeout.saturating_duration_since(now),
+                self.low_id,
+                id,
+                self.timeouts.len()
+            );
             if now > *timeout {
                 self.low_id = *id;
                 self.timeouts.pop_front();
@@ -209,7 +276,7 @@ mod tests {
 
     #[test]
     fn no_loss() {
-        let mut fh = FlowHandler::new();
+        let mut fh = ReorderingFlowHandler::new();
         let packet = Vec::new();
         let now = Instant::now();
 
@@ -225,11 +292,13 @@ mod tests {
         fh.recv(3, packet.clone(), now);
         assert_eq!(fh.emit(now).map(|(k, _)| k), Some(3));
         assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+
+        assert!(fh.timeouts.is_empty())
     }
 
     #[test]
     fn dup_is_dropped() {
-        let mut fh = FlowHandler::new();
+        let mut fh = ReorderingFlowHandler::new();
         let packet = Vec::new();
         let now = Instant::now();
 
@@ -240,11 +309,13 @@ mod tests {
         assert_eq!(fh.emit(now).map(|(k, _)| k), Some(0));
         assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
         assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+
+        assert!(fh.timeouts.is_empty())
     }
 
     #[test]
     fn loss_single_range() {
-        let mut fh = FlowHandler::new();
+        let mut fh = ReorderingFlowHandler::new();
         let packet = Vec::new();
         let now = Instant::now();
 
@@ -261,13 +332,15 @@ mod tests {
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(5));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(6));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
+
+        assert!(fh.timeouts.is_empty())
     }
 
     #[ignore]
     #[test]
     // The loss of the first packet is not detected since the the default value of low_id is 0
     fn loss_first_packet() {
-        let mut fh = FlowHandler::new();
+        let mut fh = ReorderingFlowHandler::new();
         let packet = Vec::new();
         let now = Instant::now();
 
@@ -280,11 +353,13 @@ mod tests {
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(1));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(2));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
+
+        assert!(fh.timeouts.is_empty())
     }
 
     #[test]
     fn loss_multiple_ranges() {
-        let mut fh = FlowHandler::new();
+        let mut fh = ReorderingFlowHandler::new();
         let packet = Vec::new();
 
         let now_a = Instant::now();
@@ -308,11 +383,13 @@ mod tests {
         let timeout_b = now_b + TIMEOUT + Duration::from_millis(1);
         assert_eq!(fh.emit(timeout_b).map(|(k, _)| k), Some(8));
         assert_eq!(fh.emit(timeout_b).map(|(k, _)| k), None);
+
+        assert!(fh.timeouts.is_empty())
     }
 
     #[test]
     fn reordering() {
-        let mut fh = FlowHandler::new();
+        let mut fh = ReorderingFlowHandler::new();
         let packet = Vec::new();
         let now = Instant::now();
 
@@ -324,11 +401,13 @@ mod tests {
         assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
         assert_eq!(fh.emit(now).map(|(k, _)| k), Some(2));
         assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+
+        assert!(fh.timeouts.is_empty())
     }
 
     #[test]
     fn late_arrival() {
-        let mut fh = FlowHandler::new();
+        let mut fh = ReorderingFlowHandler::new();
         let packet = Vec::new();
         let now = Instant::now();
 
@@ -354,5 +433,39 @@ mod tests {
         fh.recv(7, packet.clone(), late);
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(7));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
+
+        assert!(fh.timeouts.is_empty())
+    }
+
+    #[test]
+    fn out_of_order() {
+        let mut fh = ReorderingFlowHandler::new();
+        let packet = Vec::new();
+        let now = Instant::now();
+
+        fh.recv(0, packet.clone(), now);
+        fh.recv(1, packet.clone(), now);
+
+        // Start loss timeout for 2, 3, and 4
+        fh.recv(5, packet.clone(), now);
+        fh.recv(6, packet.clone(), now);
+
+        // Packet 4 arrives out-of-order
+        let late = now + Duration::from_millis(10);
+        fh.recv(4, packet.clone(), late);
+
+        // Packets 0 and 1 are emitted and the timeout of packet 2 is respected
+        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(0));
+        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
+        assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+
+        // The packets are released after the timeout
+        let timeout = now + TIMEOUT + Duration::from_millis(1);
+        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(4));
+        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(5));
+        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(6));
+        assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
+
+        assert!(fh.timeouts.is_empty())
     }
 }
