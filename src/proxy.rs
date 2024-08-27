@@ -177,97 +177,76 @@ impl FlowHandler for NoopFlowHandler {
     }
 }
 
+/// Holds packets until all preceeding packets have been received or a
+/// packet-specific timeout expires.
 struct ReorderingFlowHandler {
-    // All packets up to this id will be forwarded immediately
+    // All packets up to this id have been forwarded
     low_id: u64,
 
-    // The highest packet id received
-    high_id: u64,
-
-    timeouts: VecDeque<(u64, Instant)>,
-
-    // Maps packet id to the packet
-    packets: BTreeMap<u64, Vec<u8>>,
+    // Maps packet id to packet data and its release timeout
+    packets: BTreeMap<u64, (Instant, Vec<u8>)>,
 }
 
 impl ReorderingFlowHandler {
     fn new() -> Self {
         Self {
             low_id: 0,
-            high_id: 0,
+            // high_id: 0,
             packets: BTreeMap::new(),
-            timeouts: VecDeque::with_capacity(5),
+            // timeouts: VecDeque::with_capacity(5),
         }
     }
 }
 
 impl FlowHandler for ReorderingFlowHandler {
     fn recv(&mut self, id: u64, packet: Vec<u8>, now: Instant) {
-        // What if id < low_id?
-        if id == self.high_id + 1 || id == 0 {
-            // No gap, forward
-            self.high_id = id;
-        } else if id > self.high_id + 1 {
-            // Packet loss / reordering occured
-            let timeout = now + TIMEOUT;
-            self.timeouts.push_back((id, timeout));
-        } else if id < self.high_id {
-            // Late arrival: fills gap?
-        } else if id == self.high_id {
-            // Packet duplication; drop the packet
-            return;
-        } else {
-            unreachable!()
-        };
+        let mut timeout = now + TIMEOUT;
 
-        self.packets.insert(id, packet);
+        if let Some((_, (next_timeout, _))) = self.packets.range(id..).next() {
+            if *next_timeout <= timeout {
+                timeout = *next_timeout;
+            }
+        }
+
+        self.packets.insert(id, (timeout, packet));
     }
 
     fn timeout(&self, now: Instant) -> Duration {
-        match self.timeouts.front() {
-            Some((_, timeout)) => match timeout.checked_duration_since(now) {
-                Some(timeout) => timeout,
-                None => Duration::ZERO,
-            },
+        match self.packets.first_key_value() {
+            Some((_, (timeout, _))) => timeout
+                .checked_duration_since(now)
+                .unwrap_or(Duration::ZERO),
             None => Duration::MAX,
         }
     }
 
     fn emit(&mut self, now: Instant) -> Option<(u64, Vec<u8>)> {
-        // Check if a timeout expired
-        if let Some((id, timeout)) = self.timeouts.front() {
+        let (id, (timeout, _packet)) = self.packets.first_key_value()?;
+
+        if now > *timeout {
             trace!(
-                "emit: {:?} until timeout; low_id would {} -> {}; {} timeouts pending",
+                "emit: {:?} until timeout; low_id would {} -> {}; {} packets queued",
                 timeout.saturating_duration_since(now),
                 self.low_id,
                 id,
-                self.timeouts.len()
+                self.packets.len()
             );
-            if now > *timeout {
-                self.low_id = *id;
-                self.timeouts.pop_front();
-            }
-        };
-
-        let min_id_buffered = *self.packets.first_key_value().and_then(|(k, _)| Some(k))?;
+            self.low_id = *id;
+        }
 
         // Check if the next packet (without a gap) is buffered
-        if min_id_buffered <= self.low_id + 1 {
-            if min_id_buffered == self.low_id + 1 {
-                self.low_id = min_id_buffered;
+        if *id <= self.low_id + 1 {
+            if *id == self.low_id + 1 {
+                self.low_id = *id;
             }
-            return self.packets.pop_first().and_then(|(k, v)| Some((k, v)));
+            return self
+                .packets
+                .pop_first()
+                .and_then(|(k, (_, v))| Some((k, v)));
         }
 
         None
     }
-
-    /* TODO: how to implement the timoeut?
-    Think about the cases where we have two loss ranges. What should happen in that case?
-
-    Would it be easier to implement a jitter buffer from the get-go? Or use logic sketched
-    in the paper draft?
-    */
 }
 
 #[cfg(test)]
@@ -293,7 +272,7 @@ mod tests {
         assert_eq!(fh.emit(now).map(|(k, _)| k), Some(3));
         assert_eq!(fh.emit(now).map(|(k, _)| k), None);
 
-        assert!(fh.timeouts.is_empty())
+        assert!(fh.packets.is_empty())
     }
 
     #[test]
@@ -310,7 +289,7 @@ mod tests {
         assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
         assert_eq!(fh.emit(now).map(|(k, _)| k), None);
 
-        assert!(fh.timeouts.is_empty())
+        assert!(fh.packets.is_empty())
     }
 
     #[test]
@@ -333,7 +312,7 @@ mod tests {
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(6));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
 
-        assert!(fh.timeouts.is_empty())
+        assert!(fh.packets.is_empty())
     }
 
     #[ignore]
@@ -354,7 +333,7 @@ mod tests {
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(2));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
 
-        assert!(fh.timeouts.is_empty())
+        assert!(fh.packets.is_empty())
     }
 
     #[test]
@@ -384,7 +363,7 @@ mod tests {
         assert_eq!(fh.emit(timeout_b).map(|(k, _)| k), Some(8));
         assert_eq!(fh.emit(timeout_b).map(|(k, _)| k), None);
 
-        assert!(fh.timeouts.is_empty())
+        assert!(fh.packets.is_empty())
     }
 
     #[test]
@@ -402,7 +381,7 @@ mod tests {
         assert_eq!(fh.emit(now).map(|(k, _)| k), Some(2));
         assert_eq!(fh.emit(now).map(|(k, _)| k), None);
 
-        assert!(fh.timeouts.is_empty())
+        assert!(fh.packets.is_empty())
     }
 
     #[test]
@@ -434,7 +413,7 @@ mod tests {
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(7));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
 
-        assert!(fh.timeouts.is_empty())
+        assert!(fh.packets.is_empty())
     }
 
     #[test]
@@ -466,6 +445,6 @@ mod tests {
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(6));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
 
-        assert!(fh.timeouts.is_empty())
+        assert!(fh.packets.is_empty())
     }
 }
