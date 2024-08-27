@@ -6,6 +6,8 @@ use std::{
 
 use riptun::{Queue, Tun};
 
+use crate::cli::FlowHandlerOpts;
+
 pub const ALPN: [&[u8]; 2] = [b"quicheproxy", b"quicheproxy-00"];
 
 pub struct Proxy {
@@ -19,7 +21,7 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    pub fn new(name: String) -> Result<Proxy, String> {
+    pub fn new(name: String, flow_handler: FlowHandlerOpts) -> Result<Proxy, String> {
         let mut tun =
             Tun::new(&name, 1).map_err(|e| format!("Failed creating tun {}: {}", name, e))?;
         info!("Opened {}", tun.name());
@@ -30,13 +32,16 @@ impl Proxy {
             .ok_or_else(|| "Failed tun drain".to_string())?;
         queue.set_non_blocking(true).map_err(|e| format!("{}", e))?;
 
-        let fh = ReorderingFlowHandler::new();
-        // let fh = NoopFlowHandler::new();
+        info!("Using flow handler {:?}", flow_handler);
+        let fh: Box<dyn FlowHandler> = match flow_handler {
+            FlowHandlerOpts::Noop => Box::new(NoopFlowHandler::new()),
+            FlowHandlerOpts::Reordering => Box::new(ReorderingFlowHandler::new()),
+        };
 
         Ok(Proxy {
             next_send_id: 0,
             queue,
-            flow_handler: Box::new(fh),
+            flow_handler: fh,
         })
     }
 
@@ -138,7 +143,7 @@ impl Proxy {
 
 const TIMEOUT: std::time::Duration = Duration::from_millis(30);
 
-trait FlowHandler {
+pub trait FlowHandler {
     fn recv(&mut self, id: u64, packet: Vec<u8>, now: Instant);
 
     fn timeout(&self, now: Instant) -> Duration;

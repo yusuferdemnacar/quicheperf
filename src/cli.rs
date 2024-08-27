@@ -9,13 +9,6 @@ use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
 
-#[derive(Debug, Clone, ValueEnum)]
-pub enum SchedulerOpts {
-    Blest,
-    MinRTT,
-    RoundRobin,
-}
-
 // Inspired by https://github.com/clap-rs/clap/blob/dd5e6b23131f16ef8b090a8482f1b97c6a693498/clap_derive/examples/true_or_false.rs
 fn parse_bool(s: &str) -> Result<bool, &'static str> {
     match s {
@@ -58,6 +51,20 @@ fn parse_path_status(s: &str) -> Result<(std::time::Duration, usize, PathStatus)
     };
     let status = PathStatus::from(status);
     Ok((std::time::Duration::from_secs(secs), pid, status))
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum SchedulerOpts {
+    Blest,
+    MinRTT,
+    RoundRobin,
+    BestPath,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum FlowHandlerOpts {
+    Noop,
+    Reordering,
 }
 
 #[derive(Parser, Debug)]
@@ -185,6 +192,10 @@ pub enum Subcommands {
         /// ip tuntap add mode tun multi_queue name mp0
         #[arg(long, required = true)]
         tun: String,
+
+        /// Set the multipath scheduler of this peer
+        #[arg(long, value_enum, default_value = "reordering")]
+        flow_handler: FlowHandlerOpts,
     },
 
     /// Run proxy server
@@ -205,5 +216,9 @@ pub enum Subcommands {
         /// quit after one run
         #[arg(long, short = '1')]
         oneshot: bool,
+
+        /// Set the multipath scheduler of this peer
+        #[arg(long, value_enum, default_value = "reordering")]
+        flow_handler: FlowHandlerOpts,
     },
 }

@@ -47,7 +47,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::perf::TestConfig;
-use cli::Args;
+use cli::{Args, FlowHandlerOpts};
 use client::{Client, ClientError};
 use common::PathStatusUpdater;
 use git_testament::git_testament_macros;
@@ -350,6 +350,7 @@ fn main() -> ExitCode {
             cli::SchedulerOpts::Blest => Box::new(scheduler::Blest::new()),
             cli::SchedulerOpts::MinRTT => Box::new(scheduler::MinRTT::new()),
             cli::SchedulerOpts::RoundRobin => Box::new(scheduler::RoundRobin::new()),
+            cli::SchedulerOpts::BestPath => Box::new(scheduler::BestPath::new()),
         };
 
     match args.commands {
@@ -434,7 +435,11 @@ fn main() -> ExitCode {
                 }
             };
         }
-        cli::Subcommands::ProxyClient { peer_addrs, tun } => {
+        cli::Subcommands::ProxyClient {
+            peer_addrs,
+            tun,
+            flow_handler,
+        } => {
             if args.local_addrs.len() != peer_addrs.len() {
                 error!(
                 "Same number of local and peer addresses expected. One path will be created per pair.\n\
@@ -448,7 +453,7 @@ fn main() -> ExitCode {
 
             let client = client::Client::new(local_addrs, peer_addrs, quiche_config).unwrap();
 
-            return match proxy_client(client, scheduler, tun, terminate) {
+            return match proxy_client(client, scheduler, tun, flow_handler, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
@@ -464,6 +469,7 @@ fn main() -> ExitCode {
             key,
             tun,
             oneshot,
+            flow_handler,
         } => {
             if let Some(e) = server_set_cert(&mut quiche_config, cert, key) {
                 return e;
@@ -480,7 +486,7 @@ fn main() -> ExitCode {
                     }
                 };
 
-            return match proxy_server(server, tun, oneshot, terminate) {
+            return match proxy_server(server, tun, oneshot, flow_handler, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
                     error!("Fatal: {}", e);
@@ -712,6 +718,7 @@ fn proxy_client(
     mut client: Client,
     mut scheduler: Box<dyn MultipathScheduler>,
     tun: String,
+    flow_handler: FlowHandlerOpts,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), ClientError> {
     let proxy_ui = ui::ProxyUI::new();
@@ -722,7 +729,8 @@ fn proxy_client(
     client.register(&poll);
 
     let proxy_token = 128;
-    let mut proxy_client = proxy::Proxy::new(tun).map_err(|e| ClientError::IOFail(e))?;
+    let mut proxy_client =
+        proxy::Proxy::new(tun, flow_handler).map_err(|e| ClientError::IOFail(e))?;
     proxy_client.register(proxy_token, &mut poll);
 
     let keep_alive = common::KeepAlive::new(Duration::from_millis(5000));
@@ -856,6 +864,7 @@ fn proxy_server(
     mut server: Server,
     tun: String,
     oneshot: bool,
+    flow_handler: FlowHandlerOpts,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), server::ServerError> {
     let proxy_ui = ui::ProxyUI::new();
@@ -868,7 +877,7 @@ fn proxy_server(
     server.register(&poll);
 
     let proxy_token = 128;
-    let mut proxy = proxy::Proxy::new(tun).map_err(|e| ServerError::Unexpected(e))?;
+    let mut proxy = proxy::Proxy::new(tun, flow_handler).map_err(|e| ServerError::Unexpected(e))?;
     proxy.register(proxy_token, &mut poll);
 
     loop {
