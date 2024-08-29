@@ -1,11 +1,14 @@
 use std::{
+    cmp::max,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     hash::{DefaultHasher, Hasher},
     io::Write,
+    ops::Div,
     time::{Duration, Instant},
 };
 
 use etherparse::PacketHeaders;
+use itertools::Itertools;
 use riptun::{Queue, Tun};
 
 use crate::cli::FlowHandlerOpts;
@@ -174,6 +177,9 @@ impl Proxy {
                     }
                 };
 
+                // TODO: can I only call this once per fh pre function execution?
+                fh.update_stats(conn);
+
                 fh.recv(id, packet.to_vec(), now);
                 self.active_flows.insert(id);
             } else {
@@ -245,6 +251,8 @@ fn map_packet_to_flow(packet: &[u8]) -> Result<Option<FlowId>, String> {
 }
 
 pub trait FlowHandler {
+    fn update_stats(&mut self, conn: &quiche::Connection);
+
     fn recv(&mut self, id: u64, packet: Vec<u8>, now: Instant);
 
     fn timeout(&self, now: Instant) -> Duration;
@@ -276,6 +284,8 @@ impl NoopFlowHandler {
 }
 
 impl FlowHandler for NoopFlowHandler {
+    fn update_stats(&mut self, conn: &quiche::Connection) {}
+
     fn recv(&mut self, id: u64, packet: Vec<u8>, _now: Instant) {
         self.packets.push_back((id, packet))
     }
@@ -309,31 +319,42 @@ impl FlowHandler for NoopFlowHandler {
 /// Holds packets until all preceeding packets have been received or a
 /// packet-specific timeout expires.
 struct ReorderingFlowHandler {
-    // All packets up to this id have been forwarded
+    // All packets up to this id have been forwarded.
     low_id: u64,
 
-    // Maps packet id to packet data and its release timeout
+    // Maps packet id to packet data and its release timeout.
     packets: BTreeMap<u64, (Instant, Vec<u8>)>,
 
-    // The id of the next outgoing packet
+    // The id of the next outgoing packet.
     next_send_id: u64,
+
+    // Dynamically updated timeout applied to incoming packets.
+    timeout: Duration,
 }
 
 impl ReorderingFlowHandler {
-    const TIMEOUT: std::time::Duration = Duration::from_millis(30);
+    const MAX_TIMEOUT: std::time::Duration = Duration::from_millis(30);
 
     fn new() -> Self {
         Self {
             low_id: 0,
             packets: BTreeMap::new(),
             next_send_id: 0,
+            timeout: Self::MAX_TIMEOUT,
         }
     }
 }
 
 impl FlowHandler for ReorderingFlowHandler {
+    fn update_stats(&mut self, conn: &quiche::Connection) {
+        self.timeout = match conn.path_stats().map(|s| s.rtt).max() {
+            Some(rtt) => max(Self::MAX_TIMEOUT, rtt.div(2)),
+            None => Self::MAX_TIMEOUT,
+        };
+    }
+
     fn recv(&mut self, id: u64, packet: Vec<u8>, now: Instant) {
-        let mut timeout = now + Self::TIMEOUT;
+        let mut timeout = now + self.timeout;
 
         if let Some((_, (next_timeout, _))) = self.packets.range(id..).next() {
             if *next_timeout <= timeout {
@@ -472,7 +493,7 @@ mod tests {
         assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
         assert_eq!(fh.emit(now).map(|(k, _)| k), None);
 
-        let timeout = now + ReorderingFlowHandler::TIMEOUT + Duration::from_millis(1);
+        let timeout = now + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(5));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(6));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
@@ -493,7 +514,7 @@ mod tests {
 
         assert_eq!(fh.emit(now).map(|(k, _)| k), None);
 
-        let timeout = now + ReorderingFlowHandler::TIMEOUT + Duration::from_millis(1);
+        let timeout = now + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(1));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(2));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
@@ -519,12 +540,12 @@ mod tests {
         assert_eq!(fh.emit(now_a).map(|(k, _)| k), Some(1));
         assert_eq!(fh.emit(now_a).map(|(k, _)| k), None);
 
-        let timeout_a = now_a + ReorderingFlowHandler::TIMEOUT + Duration::from_millis(1);
+        let timeout_a = now_a + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
         assert_eq!(fh.emit(timeout_a).map(|(k, _)| k), Some(5));
         assert_eq!(fh.emit(timeout_a).map(|(k, _)| k), Some(6));
         assert_eq!(fh.emit(timeout_a).map(|(k, _)| k), None);
 
-        let timeout_b = now_b + ReorderingFlowHandler::TIMEOUT + Duration::from_millis(1);
+        let timeout_b = now_b + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
         assert_eq!(fh.emit(timeout_b).map(|(k, _)| k), Some(8));
         assert_eq!(fh.emit(timeout_b).map(|(k, _)| k), None);
 
@@ -564,12 +585,12 @@ mod tests {
         assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
         assert_eq!(fh.emit(now).map(|(k, _)| k), None);
 
-        let timeout = now + ReorderingFlowHandler::TIMEOUT + Duration::from_millis(1);
+        let timeout = now + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(5));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(6));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
 
-        let late = now + ReorderingFlowHandler::TIMEOUT + Duration::from_millis(10);
+        let late = now + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(10);
         fh.recv(3, packet.clone(), late);
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(3));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
@@ -604,7 +625,7 @@ mod tests {
         assert_eq!(fh.emit(now).map(|(k, _)| k), None);
 
         // The packets are released after the timeout
-        let timeout = now + ReorderingFlowHandler::TIMEOUT + Duration::from_millis(1);
+        let timeout = now + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(4));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(5));
         assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(6));
