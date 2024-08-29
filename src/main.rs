@@ -811,7 +811,7 @@ fn proxy_client(
             let token: usize = event.token().into();
             if token == proxy_token {
                 if client.conn.is_established() {
-                    proxy_client.read_tun(&mut client.conn);
+                    proxy_client.forward_tun_to_conn(&mut client.conn);
                 }
             } else {
                 client.read(event)?;
@@ -843,7 +843,7 @@ fn proxy_client(
 
         if alpn_negotiated {
             proxy_client
-                .write_tun(&mut client.conn)
+                .forward_conn_to_tun(&mut client.conn)
                 .map_err(|e| ClientError::IOFail(e))?;
         }
 
@@ -946,7 +946,7 @@ fn proxy_server(
                 // TODO: sent the packet to the first client, improve this
                 for (_, client) in server.clients.iter_mut() {
                     if client.conn.is_established() {
-                        proxy.read_tun(&mut client.conn);
+                        proxy.forward_tun_to_conn(&mut client.conn);
                     }
                 }
             } else {
@@ -969,7 +969,7 @@ fn proxy_server(
 
                 for (_, client) in server.clients.iter_mut() {
                     proxy
-                        .write_tun(&mut client.conn)
+                        .forward_conn_to_tun(&mut client.conn)
                         .map_err(|e| ServerError::FatalSocket(e))?;
                 }
             }
