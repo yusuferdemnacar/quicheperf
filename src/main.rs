@@ -353,6 +353,8 @@ fn main() -> ExitCode {
             cli::SchedulerOpts::BestPath => Box::new(scheduler::BestPath::new()),
         };
 
+    let qlog_setter = common::QlogSetter::new(args.qlogdir, args.compress_qlogs);
+
     match args.commands {
         cli::Subcommands::Client {
             peer_addrs,
@@ -394,7 +396,14 @@ fn main() -> ExitCode {
 
             quiche_config.set_application_protos(&perf::ALPN).unwrap();
 
-            let client = client::Client::new(local_addrs, peer_addrs, quiche_config).unwrap();
+            let client =
+                match client::Client::new(local_addrs, peer_addrs, qlog_setter, quiche_config) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!("Failed creating client: {:?}", e);
+                        return ExitCode::FAILURE;
+                    }
+                };
 
             return match perf_client(client, scheduler, tc, psu, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
@@ -414,14 +423,19 @@ fn main() -> ExitCode {
 
             quiche_config.set_application_protos(&perf::ALPN).unwrap();
 
-            let server =
-                match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        error!("Failed to set up server: {:?}", e);
-                        return ExitCode::FAILURE;
-                    }
-                };
+            let server = match server::Server::new(
+                local_addrs,
+                args.password,
+                quiche_config,
+                qlog_setter,
+                scheduler,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to set up server: {:?}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
 
             return match perf_server(server, oneshot, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
@@ -451,7 +465,8 @@ fn main() -> ExitCode {
 
             quiche_config.set_application_protos(&proxy::ALPN).unwrap();
 
-            let client = client::Client::new(local_addrs, peer_addrs, quiche_config).unwrap();
+            let client =
+                client::Client::new(local_addrs, peer_addrs, qlog_setter, quiche_config).unwrap();
 
             return match proxy_client(client, scheduler, tun, flow_handler, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
@@ -477,14 +492,19 @@ fn main() -> ExitCode {
 
             quiche_config.set_application_protos(&proxy::ALPN).unwrap();
 
-            let server =
-                match server::Server::new(local_addrs, args.password, quiche_config, scheduler) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        error!("Failed to set up server: {:?}", e);
-                        return ExitCode::FAILURE;
-                    }
-                };
+            let server = match server::Server::new(
+                local_addrs,
+                args.password,
+                quiche_config,
+                qlog_setter,
+                scheduler,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to set up server: {:?}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
 
             return match proxy_server(server, tun, oneshot, flow_handler, terminate) {
                 Ok(_) => ExitCode::SUCCESS,

@@ -122,6 +122,7 @@ impl Client {
     pub fn new(
         local_addrs: Vec<SocketAddr>,
         peer_addrs: Vec<SocketAddr>,
+        qlog_setter: QlogSetter,
         mut config: quiche::Config,
     ) -> Result<Client, ClientError> {
         let mut sockets = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
@@ -205,11 +206,9 @@ impl Client {
                     .intersperse(",".to_string())
                     .collect(),
             );
-            if let Err(e) =
-                common::set_qlog(&mut conn, format!("{:?}", scid), "client", peer_addrs_str)
-            {
-                return Err(ClientError::IOFail(e));
-            };
+            qlog_setter
+                .set_qlog(&mut conn, format!("{:?}", scid), "client", peer_addrs_str)
+                .map_err(ClientError::IOFail)?;
             // common::qlog_metadata(&mut conn, &tc, &config);
         }
 

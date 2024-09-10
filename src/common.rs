@@ -212,57 +212,80 @@ pub fn bind_socket_to_if(
 }
 
 #[cfg(feature = "qlog")]
-pub fn set_qlog(
-    conn: &mut quiche::Connection,
-    scid: String,
-    role: &str,
-    peer_addr: Option<String>,
-) -> Result<(), String> {
-    if let Some(dir) = std::env::var_os("QLOGDIR") {
-        let now_utc = OffsetDateTime::now_utc();
-        let compact_fmt =
-            format_description!("[year repr:last_two][month][day]T[hour][minute][second]");
-        let time_compact = now_utc.format(&compact_fmt).unwrap();
-        let time_iso = now_utc.format(&Iso8601::DEFAULT).unwrap();
+pub struct QlogSetter {
+    qlogdir: Option<String>,
+    compress_qlogs: bool,
+}
 
-        let mut path = std::path::PathBuf::from(dir);
-        let filename = format!("{}-{}-{}.sqlog.zst", time_compact, scid, role);
-        path.push(filename);
-
-        let writer = match std::fs::File::create(&path) {
-            Ok(f) => Ok(std::io::BufWriter::new(f)),
-            Err(e) => Err(format!(
-                "Error creating qlog file attempted path was {:?}: {}",
-                path, e
-            )),
-        }?;
-        info!("Writing qlog to {}", path.display());
-
-        let mut writer = match Encoder::new(writer, 0) {
-            Ok(v) => v,
-            Err(e) => panic!("Error creating zstd qlog encoder: {}", e),
-        };
-        writer.multithread(1).unwrap();
-        let writer = Encoder::auto_finish(writer);
-        let writer = SynchronizedWriter::new(Arc::new(Mutex::new(writer)));
-
-        let peer_addr = match peer_addr {
-            Some(s) => format!(" peer_addr={}", s),
-            None => "".to_string(),
-        };
-
-        conn.set_qlog_with_level(
-            std::boxed::Box::new(writer),
-            "quicheperf".to_string(),
-            format!(
-                "quicheperf id={} start_time={}{}",
-                scid, time_iso, peer_addr
-            ),
-            quiche::QlogLevel::Extra,
-        );
+impl QlogSetter {
+    pub fn new(qlogdir: Option<String>, compress_qlogs: bool) -> Self {
+        Self {
+            qlogdir,
+            compress_qlogs,
+        }
     }
+    pub fn set_qlog(
+        &self,
+        conn: &mut quiche::Connection,
+        scid: String,
+        role: &str,
+        peer_addr: Option<String>,
+    ) -> Result<(), String> {
+        if let Some(qlogdir) = self.qlogdir.as_ref() {
+            let now_utc = OffsetDateTime::now_utc();
+            let compact_fmt =
+                format_description!("[year repr:last_two][month][day]T[hour][minute][second]");
+            let time_compact = now_utc.format(&compact_fmt).unwrap();
+            let time_iso = now_utc.format(&Iso8601::DEFAULT).unwrap();
 
-    Ok(())
+            let mut path = std::path::PathBuf::from(qlogdir);
+            path.push(format!("{}-{}-{}", time_compact, scid, role));
+            if self.compress_qlogs {
+                path.set_extension("sqlog.zst");
+            } else {
+                path.set_extension("sqlog");
+            }
+
+            let writer = match std::fs::File::create(&path) {
+                Ok(f) => Ok(std::io::BufWriter::new(f)),
+                Err(e) => Err(format!(
+                    "Error creating qlog file attempted path was {}: {}",
+                    path.to_str().unwrap(),
+                    e
+                )),
+            }?;
+            info!("Writing qlog to {}", path.display());
+
+            let writer: Box<dyn std::io::Write + Send + Sync> = if self.compress_qlogs {
+                let mut writer = match Encoder::new(writer, 0) {
+                    Ok(v) => v,
+                    Err(e) => panic!("Error creating zstd qlog encoder: {}", e),
+                };
+                writer.multithread(1).unwrap();
+                let writer = Encoder::auto_finish(writer);
+                Box::new(SynchronizedWriter::new(Arc::new(Mutex::new(writer))))
+            } else {
+                Box::new(writer)
+            };
+
+            let peer_addr = match peer_addr {
+                Some(s) => format!(" peer_addr={}", s),
+                None => "".to_string(),
+            };
+
+            conn.set_qlog_with_level(
+                std::boxed::Box::new(writer),
+                "quicheperf".to_string(),
+                format!(
+                    "quicheperf id={} start_time={}{}",
+                    scid, time_iso, peer_addr
+                ),
+                quiche::QlogLevel::Extra,
+            );
+        }
+
+        Ok(())
+    }
 }
 
 // pub fn qlog_metadata(conn: &mut quiche::Connection, tc: &TestConfig, config: &quiche::Config) {

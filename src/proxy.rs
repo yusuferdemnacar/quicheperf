@@ -8,7 +8,6 @@ use std::{
 };
 
 use etherparse::PacketHeaders;
-use itertools::Itertools;
 use riptun::{Queue, Tun};
 
 use crate::cli::FlowHandlerOpts;
@@ -284,7 +283,7 @@ impl NoopFlowHandler {
 }
 
 impl FlowHandler for NoopFlowHandler {
-    fn update_stats(&mut self, conn: &quiche::Connection) {}
+    fn update_stats(&mut self, _conn: &quiche::Connection) {}
 
     fn recv(&mut self, id: u64, packet: Vec<u8>, _now: Instant) {
         self.packets.push_back((id, packet))
@@ -430,7 +429,8 @@ mod tests {
         packet
     }
 
-    fn build_packet_icmp(sport: u16) -> Vec<u8> {
+    #[allow(dead_code)]
+    fn build_packet_icmp() -> Vec<u8> {
         let icmp = etherparse::Icmpv4Type::EchoRequest(IcmpEchoHeader { id: 0, seq: 0 });
         let builder = PacketBuilder::ipv4([192, 168, 1, 1], [192, 168, 1, 2], 20).icmpv4(icmp);
         let payload = [0; 8];

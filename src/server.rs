@@ -268,6 +268,7 @@ pub struct Server {
     src_addr_tokens: HashMap<SocketAddr, usize>,
 
     keylog: Option<std::fs::File>,
+    qlog_setter: QlogSetter,
 
     rng: SystemRandom,
     conn_id_seed: ring::hmac::Key,
@@ -285,6 +286,7 @@ impl Server {
         local_addrs: Vec<SocketAddr>,
         password: Option<String>,
         config: quiche::Config,
+        qlog_setter: common::QlogSetter,
         scheduler: Box<dyn MultipathScheduler>,
     ) -> Result<Server, ServerError> {
         let mut sockets: Slab<SocketState> =
@@ -348,6 +350,7 @@ impl Server {
             src_addr_tokens,
 
             keylog: configure_keylog(),
+            qlog_setter,
 
             conn_id_seed,
             rng,
@@ -580,10 +583,9 @@ impl Server {
 
             // Only bother with qlog if the user specified it.
             #[cfg(feature = "qlog")]
-            if let Err(e) = common::set_qlog(&mut conn, format!("{:?}", &hdr.scid), "server", None)
-            {
-                return Err(PacketRecvAction::IOFail(e));
-            };
+            self.qlog_setter
+                .set_qlog(&mut conn, format!("{:?}", &hdr.scid), "server", None)
+                .map_err(PacketRecvAction::IOFail)?;
 
             let client_id = self.next_client_id;
 
