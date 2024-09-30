@@ -1,7 +1,7 @@
 # Build from parent folder:
 # docker build -t quicheperf . -f quicheperf/Dockerfile
 
-FROM rust:1.77.0 as build
+FROM rust:1.81.0 AS build
 
 WORKDIR /build
 
