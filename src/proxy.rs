@@ -14,7 +14,8 @@ use crate::cli::FlowHandlerOpts;
 
 pub const ALPN: [&[u8]; 2] = [b"quicheproxy", b"quicheproxy-00"];
 
-type FlowId = u64;
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug)]
+struct FlowId(u64);
 
 pub struct Proxy {
     queue: Queue,
@@ -87,9 +88,9 @@ impl Proxy {
             }
 
             // TODO: use read_vectored?
-            let mut read = match self.queue.recv(&mut buf[8..]) {
+            let read = match self.queue.recv(&mut buf[8..]) {
                 Ok(read) if read == 0 => return,
-                Ok(read) => read,
+                Ok(read) => read + 8,
                 // If its a WouldBlock simply short circuit, and re-poll the Queues.
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(err) => {
@@ -99,7 +100,7 @@ impl Proxy {
                 }
             };
 
-            let flow_id = map_packet_to_flow(&buf[..read]).unwrap_or_else(|e| {
+            let flow_id = map_packet_to_flow(&buf[8..read]).unwrap_or_else(|e| {
                 warn!("Failed parsing packet: {}", e);
                 None
             });
@@ -124,7 +125,6 @@ impl Proxy {
                 None => &[0; 8],
             };
             buf[..8].copy_from_slice(flow_id);
-            read += 8;
 
             debug!(
                 "Sending dgram {} with {}B, max={:?}B",
@@ -150,14 +150,14 @@ impl Proxy {
         let now = Instant::now();
 
         while let Ok(data) = conn.dgram_recv_vec() {
-            let id = u64::from_le_bytes(data[..8].try_into().unwrap());
+            let packet_id = u64::from_le_bytes(data[..8].try_into().unwrap());
             let packet = &data[8..];
 
             debug!(
                 "{} received packet with {}B from dgram {}",
                 conn.trace_id(),
                 packet.len(),
-                id,
+                packet_id,
             );
 
             let flow_id = map_packet_to_flow(packet).unwrap_or_else(|e| {
@@ -179,8 +179,8 @@ impl Proxy {
                 // TODO: can I only call this once per fh pre function execution?
                 fh.update_stats(conn);
 
-                fh.recv(id, packet.to_vec(), now);
-                self.active_flows.insert(id);
+                fh.recv(packet_id, packet.to_vec(), now);
+                self.active_flows.insert(flow_id);
             } else {
                 let _written = self
                     .queue
@@ -193,7 +193,7 @@ impl Proxy {
             let fh = self
                 .flows
                 .get_mut(flow_id)
-                .expect("flow_id {} in HashSet but not in HashMap");
+                .expect(format!("flow_id {:?} in HashSet but not in HashMap", flow_id).as_str());
             while let Some((id, packet)) = fh.emit(now) {
                 match self.queue.write(&packet) {
                     Ok(written) => trace!("Emitted packet {} with {}B", id, written),
@@ -209,7 +209,8 @@ impl Proxy {
 
 /// Returns Some(flow_id) for TCP and UDP flows. Returns None for ICMP.
 fn map_packet_to_flow(packet: &[u8]) -> Result<Option<FlowId>, String> {
-    let headers = PacketHeaders::from_ip_slice(packet).map_err(|e| format!("{}", e))?;
+    let headers =
+        PacketHeaders::from_ip_slice(packet).map_err(|e| format!("from_ip_slice: {}", e))?;
 
     match headers.transport.as_ref().ok_or("No transport header")? {
         etherparse::TransportHeader::Icmpv4(_) | etherparse::TransportHeader::Icmpv6(_) => {
@@ -246,7 +247,7 @@ fn map_packet_to_flow(packet: &[u8]) -> Result<Option<FlowId>, String> {
 
     // TODO: parse the connection ID from QUIC packets?
 
-    Ok(Some(s.finish()))
+    Ok(Some(FlowId(s.finish())))
 }
 
 pub trait FlowHandler {
