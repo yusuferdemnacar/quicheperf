@@ -125,7 +125,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     config.enable_hystart(args.hystart);
     config.enable_pacing(true);
 
-    config.enable_dgram(true, 100, 1000);
+    config.enable_dgram(true, 100, 100);
 
     config.set_max_connection_window(25_165_824);
     config.set_max_stream_window(16_777_216);
@@ -749,6 +749,7 @@ fn proxy_client(
     client.register(&poll);
 
     let proxy_token = 128;
+    let mut proxy_tun_drained = false;
     let mut proxy_client =
         proxy::Proxy::new(tun, flow_handler).map_err(|e| ClientError::IOFail(e))?;
     proxy_client.register(proxy_token, &mut poll);
@@ -827,14 +828,23 @@ fn proxy_client(
             client.conn.close(true, 0x1, b"user terminated").ok();
         }
 
+        let mut proxy_tun_checked = false;
         for event in &events {
             let token: usize = event.token().into();
             if token == proxy_token {
                 if client.conn.is_established() {
-                    proxy_client.forward_tun_to_conn(&mut client.conn);
+                    proxy_tun_drained = proxy_client.forward_tun_to_conn(&mut client.conn);
+                    proxy_tun_checked = true;
                 }
             } else {
                 client.read(event)?;
+            }
+        }
+
+        // See proxy_server()
+        if !proxy_tun_checked && !proxy_tun_drained {
+            if client.conn.is_established() {
+                proxy_tun_drained = proxy_client.forward_tun_to_conn(&mut client.conn);
             }
         }
 
@@ -897,6 +907,7 @@ fn proxy_server(
     server.register(&poll);
 
     let proxy_token = 128;
+    let mut proxy_tun_drained = false;
     let mut proxy = proxy::Proxy::new(tun, flow_handler).map_err(|e| ServerError::Unexpected(e))?;
     proxy.register(proxy_token, &mut poll);
 
@@ -954,19 +965,22 @@ fn proxy_server(
             None => "None".to_string(),
         };
         log::trace!(
-            "timeout (ms) {}: slept {}, expired={}",
+            "timeout (ms) {}: slept {}, expired={}, events={}",
             timeout_str,
             poll_duration.as_millis(),
             conn_timeout_expired,
+            !events.is_empty()
         );
 
+        let mut proxy_tun_checked = false;
         for event in events.iter() {
             let token = event.token().into();
             if token == proxy_token {
                 // TODO: sent the packet to the first client, improve this
                 for (_, client) in server.clients.iter_mut() {
                     if client.conn.is_established() {
-                        proxy.forward_tun_to_conn(&mut client.conn);
+                        proxy_tun_drained = proxy.forward_tun_to_conn(&mut client.conn);
+                        proxy_tun_checked = true;
                     }
                 }
             } else {
@@ -994,6 +1008,20 @@ fn proxy_server(
                 }
             }
         }
+
+        // If the proxy wasn't drained, no further proxy READABLE events are raised.
+        // We therefore not to "manually" read from the interface. Only do this if
+        // we not already read from the interface in the preceding loop.
+        // Could also be moved after server.send() since this might have made space
+        // for more datagrams.
+        if !proxy_tun_checked && !proxy_tun_drained {
+            for (_, client) in server.clients.iter_mut() {
+                if client.conn.is_established() {
+                    proxy_tun_drained = proxy.forward_tun_to_conn(&mut client.conn);
+                }
+            }
+        }
+
         server.send()?;
 
         if let Some((key, client)) = server.clients.iter().next() {

@@ -78,21 +78,32 @@ impl Proxy {
         }
     }
 
-    /// Read packet from the tun interface if quiche can queue another datagram
-    pub fn forward_tun_to_conn(&mut self, conn: &mut quiche::Connection) {
+    /// Read packet from the tun interface if quiche can queue another datagram.
+    /// Returns `true` if the tun queue has been drained (i.e., quiche could queue
+    /// more packets or no packets have been queued on the tun interface). If
+    /// `false` is returned, the method should be called again as soon as quiche
+    /// has emitted datagrams.
+    pub fn forward_tun_to_conn(&mut self, conn: &mut quiche::Connection) -> bool {
         let mut buf: [u8; 1500] = [0x00; 1500];
         loop {
             if conn.is_dgram_send_queue_full() {
-                trace!("read_tun: not reading since dgram_send_queue is full");
-                return;
+                trace!("Not reading from tun since dgram_send_queue is full: {}P {}B",
+                    conn.dgram_send_queue_len(), conn.dgram_send_queue_byte_size());
+                return false;
             }
 
             // TODO: use read_vectored?
             let read = match self.queue.recv(&mut buf[8..]) {
-                Ok(read) if read == 0 => return,
+                Ok(read) if read == 0 => {
+                    trace!("Read 0B from tun");
+                    break;
+                }
                 Ok(read) => read + 8,
                 // If its a WouldBlock simply short circuit, and re-poll the Queues.
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    trace!("Read WouldBlock from tun");
+                    break;
+                },
                 Err(err) => {
                     // If we error simply log the issue, and continue on business as usual.
                     error!("Reading from tun: {}", err);
@@ -120,15 +131,16 @@ impl Proxy {
             };
 
             // Write packet id
-            let flow_id = match fh {
+            let packet_id = match fh {
                 Some(ref fh) => &fh.next_send_id().to_le_bytes(),
                 None => &[0; 8],
             };
-            buf[..8].copy_from_slice(flow_id);
+            buf[..8].copy_from_slice(packet_id);
 
             debug!(
-                "Sending dgram {} with {}B, max={:?}B",
-                u64::from_le_bytes(*flow_id),
+                "Consumed from tun, sending {:?}-{} with {}B, max={:?}B",
+                flow_id,
+                u64::from_le_bytes(*packet_id),
                 read,
                 conn.dgram_max_writable_len()
             );
@@ -143,6 +155,8 @@ impl Proxy {
                 fh.incr_send_id();
             }
         }
+
+        true
     }
 
     /// Process received datagrams and write them to the tun interface
@@ -153,17 +167,19 @@ impl Proxy {
             let packet_id = u64::from_le_bytes(data[..8].try_into().unwrap());
             let packet = &data[8..];
 
-            debug!(
-                "{} received packet with {}B from dgram {}",
-                conn.trace_id(),
-                packet.len(),
-                packet_id,
-            );
-
             let flow_id = map_packet_to_flow(packet).unwrap_or_else(|e| {
                 warn!("Failed parsing packet: {}", e);
                 None
             });
+
+            debug!(
+                "{} received packet {:?}{} with {}B",
+                conn.trace_id(),
+                flow_id,
+                packet_id,
+                packet.len(),
+            );
+
 
             if let Some(flow_id) = flow_id {
                 let fh = match self.flows.get_mut(&flow_id) {
@@ -196,7 +212,7 @@ impl Proxy {
                 .expect(format!("flow_id {:?} in HashSet but not in HashMap", flow_id).as_str());
             while let Some((id, packet)) = fh.emit(now) {
                 match self.queue.write(&packet) {
-                    Ok(written) => trace!("Emitted packet {} with {}B", id, written),
+                    Ok(written) => trace!("Emitted packet {:?}-{} with {}B to tun", flow_id, id, written),
                     Err(e) => error!("Failed writing to tun: {}", e),
                 }
             }

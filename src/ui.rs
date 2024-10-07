@@ -514,12 +514,12 @@ impl UI for ProxyUI {
     fn print_header(&self, npaths: usize) -> Result<()> {
         let mut pstr = String::new();
         for i in 0..npaths {
-            pstr.push_str(&format!("‖ P{} Mbps | P{} Pkts ", i, i));
+            pstr.push_str(&format!("‖ P{} Mbps / Pkts ", i));
         }
 
         writeln!(
             io::stdout(),
-            "| {:<5} / {:<5} {:<2} {}|",
+            "| {:<5}/{:<5} {:<2} {}|",
             "sec",
             "time",
             "",
@@ -548,11 +548,11 @@ impl UI for ProxyUI {
             let pstats = &path_stats.stats;
 
             pstr_sent.push_str(&format!(
-                "‖ {:>7.2} | {:>7.2} ",
+                "‖ {:>7.2} {:>6} ",
                 pstats.tput_sent, pstats.dgram_sent,
             ));
             pstr_recv.push_str(&format!(
-                "‖ {:>7.2} | {:>7.2} ",
+                "‖ {:>7.2} {:>6} ",
                 pstats.tput_recv, pstats.dgram_recv,
             ));
         }
@@ -562,7 +562,7 @@ impl UI for ProxyUI {
 
         writeln!(
             io::stdout(),
-            "| {:>5} / {:>5} -> {}|\n| {:>5}   {:>5} <- {}|",
+            "| {:>5}/{:>5} out {}|\n| {:>5} {:>5} in  {}|",
             elapsed,
             time,
             pstr_sent,
