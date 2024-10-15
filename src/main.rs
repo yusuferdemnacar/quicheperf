@@ -775,6 +775,11 @@ fn proxy_client(
         }
 
         let ui_timeout = ui.timeout();
+        let proxy_timeout = if client.conn.is_dgram_send_queue_full() {
+            Duration::MAX
+        } else {
+            proxy_client.timeout()
+        };
         let keep_alive_timeout = keep_alive.timeout(&client.conn);
         let early_data_timeout = if client.conn.is_in_early_data() {
             Duration::ZERO
@@ -784,6 +789,7 @@ fn proxy_client(
         let conn_timeout = client.conn.timeout().unwrap_or(Duration::ZERO);
         let timeout = *[
             ui_timeout,
+            proxy_timeout,
             keep_alive_timeout,
             early_data_timeout,
             conn_timeout,
@@ -812,12 +818,12 @@ fn proxy_client(
         }
 
         log::trace!(
-            "timeout (ms) {}, slept {}, conn_expired={}, events={}: ui={}, ka={}, early={}, conn={}",
+            "timeout (ms) {}, slept {}, {}: ui={}, proxy={}, ka={}, early={}, conn={}",
             timeout.as_millis(),
             poll_duration.as_millis(),
-            conn_timeout_expired,
-            !events.is_empty(),
+            if events.is_empty() { "no_ev" } else { "ev" },
             common::duration_as_millis(ui_timeout),
+            common::duration_as_millis(proxy_timeout),
             common::duration_as_millis(keep_alive_timeout),
             common::duration_as_millis(early_data_timeout),
             common::duration_as_millis(conn_timeout),
@@ -929,7 +935,15 @@ fn proxy_server(
             .filter_map(|c| c.conn.timeout())
             .min();
         let ui_timeout = ui.timeout();
-        let proxy_timeout = proxy.timeout();
+        let proxy_timeout = if let Some(c) = server.clients.values().next() {
+            if c.conn.is_dgram_send_queue_full() {
+                Duration::MAX
+            } else {
+                proxy.timeout()
+            }
+        } else {
+            Duration::MAX
+        };
 
         let timeout = Some(min(
             min(conn_timeout.unwrap_or(max_timeout), ui_timeout),
@@ -960,16 +974,14 @@ fn proxy_server(
                 .for_each(|c| c.conn.on_timeout());
         }
 
-        let timeout_str = match timeout {
-            Some(v) => v.as_millis().to_string(),
-            None => "None".to_string(),
-        };
         log::trace!(
-            "timeout (ms) {}: slept {}, expired={}, events={}",
-            timeout_str,
+            "timeout {:?}: slept {}, conn_expired={}, events={}, ui={}, proxy={}",
+            timeout,
             poll_duration.as_millis(),
             conn_timeout_expired,
-            !events.is_empty()
+            !events.is_empty(),
+            common::duration_as_millis(ui_timeout),
+            common::duration_as_millis(proxy_timeout)
         );
 
         let mut proxy_tun_checked = false;
@@ -995,7 +1007,7 @@ fn proxy_server(
                             break;
                         }
                         server::ServerError::Unexpected(e) => {
-                            trace!("{}", e);
+                            warn!("{}", e);
                             continue;
                         }
                     }
