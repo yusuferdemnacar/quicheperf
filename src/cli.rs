@@ -156,6 +156,10 @@ pub struct Args {
     #[arg(long, global = true, default_value = "2", help_heading = FC_HEADING)]
     pub fc_reactive_rtt_trigger_factor: u32,
 
+    /// Set the length of the datagram send queue (unit: number of packets)
+    #[arg(long, global = true, default_value = "100", help_heading = FC_HEADING)]
+    pub dgram_send_queue_len: usize,
+
     // --- Subcommands ---
     #[command(subcommand)]
     pub commands: Subcommands,

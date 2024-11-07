@@ -113,6 +113,8 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
         config.set_multipath(false);
     }
 
+    // config.enable_owd();
+
     if let Ok(cwnd) = args.congestion.parse::<usize>() {
         config.set_cc_algorithm_name("constant").unwrap();
         config.set_constant_cwnd(cwnd);
@@ -125,7 +127,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     config.enable_hystart(args.hystart);
     config.enable_pacing(true);
 
-    config.enable_dgram(true, 100, 100);
+    config.enable_dgram(true, 1000, args.dgram_send_queue_len);
 
     config.set_max_connection_window(25_165_824);
     config.set_max_stream_window(16_777_216);
