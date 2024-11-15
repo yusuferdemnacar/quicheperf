@@ -172,7 +172,7 @@ impl Perf {
             self.tc.as_ref().unwrap().duration
         );
         self.finished_at = Some(Instant::now());
-        match conn.close(true, 0x00, b"kthxbye") {
+        match conn.close(true, 0x00, b"test finished") {
             // Already closed.
             Ok(_) | Err(quiche::Error::Done) => true,
             Err(e) => panic!("error closing conn: {:?}", e),
