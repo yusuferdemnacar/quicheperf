@@ -39,6 +39,10 @@ struct SocketState {
     until: usize,
     send_info: Option<SendInfo>,
     max_datagram_size: usize,
+
+    // `true` if more full-sized packets (= `max_datagram_size`) can be queueud on this path.
+    // With GSO, only the last packet can be tless than `max_datagram_size`.
+    extendable: bool,
 }
 
 impl SocketState {
@@ -51,6 +55,7 @@ impl SocketState {
             until: 0,
             send_info: None,
             max_datagram_size: 0,
+            extendable: true,
         }
     }
 
@@ -58,6 +63,7 @@ impl SocketState {
         self.until = 0;
         self.send_info = None;
         self.max_datagram_size = 0;
+        self.extendable = true;
     }
 
     /// Returns whether a buffer is currently waiting to be written to the socket.
@@ -66,11 +72,27 @@ impl SocketState {
         self.send_info.is_some()
     }
 
+    // Returns whether more packets can be queued on this socket.
     fn writable_for_dest(&self, peer_addr: &SocketAddr) -> bool {
-        match self.send_info {
+        let dest = match self.send_info {
             Some(si) => si.to == *peer_addr,
             None => true,
-        }
+        };
+        dest && self.extendable
+    }
+
+    // Returns the part of the `self.buf` for the next packet.
+    fn buf_until(&mut self, max_send_burst: usize) -> Option<&mut [u8]> {
+        // TODO: check self.extendable?
+        self.buf.get_mut(self.until..max_send_burst)
+        // &mut self.buf[self.until..max_send_burst]
+    }
+
+    // Advance the buffer after a packet has been written to `buf_until()`.
+    // Check if more packets can be queued.
+    fn buf_advance(&mut self, written: usize) {
+        self.until += written;
+        self.extendable = written == self.max_datagram_size;
     }
 
     /// Try to send the scheduled buffer, if it exists.
@@ -663,15 +685,19 @@ impl Server {
 
                     // TODO: get send quantum for that specific path
 
-                    if socket.until >= max_send_burst {
-                        // The QUIC connection might have more data to write than max_send_burst.
-                        // Write data to the socket and try to generate more packets.
-                        continue_write = true;
-                        break;
-                    }
+                    let buf = match socket.buf_until(max_send_burst) {
+                        Some(v) => v,
+                        None => {
+                            // We already wrote data up to `max_send_burst`. Send queued packets now but
+                            // continue to ask conn for more packets immediately afterwards before receiving
+                            // new packets.
+                            continue_write = true;
+                            break;
+                        }
+                    };
 
                     let (written, send_info) = match client.conn.send_on_path_with_instructions(
-                        &mut socket.buf[socket.until..max_send_burst],
+                        buf,
                         Some(local_addr),
                         Some(peer_addr),
                         Some(send_instr),
@@ -697,7 +723,7 @@ impl Server {
                         }
                     };
 
-                    socket.until += written;
+                    socket.buf_advance(written);
                     let _ = socket.send_info.get_or_insert(send_info);
                     socket.max_datagram_size = client.max_datagram_size;
 
@@ -716,7 +742,7 @@ impl Server {
                         break;
                     }
 
-                    if written < client.max_datagram_size {
+                    if !socket.extendable {
                         // https://github.com/cloudflare/quiche/commit/eac98fae15ce67ee774125c90db0d59c4deda5da
                         // The QUIC connection might has more data to write.
                         continue_write = true;

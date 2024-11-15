@@ -87,8 +87,11 @@ impl Proxy {
         let mut buf: [u8; 1500] = [0x00; 1500];
         loop {
             if conn.is_dgram_send_queue_full() {
-                trace!("Not reading from tun since dgram_send_queue is full: {}P {}B",
-                    conn.dgram_send_queue_len(), conn.dgram_send_queue_byte_size());
+                trace!(
+                    "Not reading from tun since dgram_send_queue is full: {}P {}B",
+                    conn.dgram_send_queue_len(),
+                    conn.dgram_send_queue_byte_size()
+                );
                 return false;
             }
 
@@ -103,7 +106,7 @@ impl Proxy {
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                     trace!("Read WouldBlock from tun");
                     break;
-                },
+                }
                 Err(err) => {
                     // If we error simply log the issue, and continue on business as usual.
                     error!("Reading from tun: {}", err);
@@ -180,7 +183,6 @@ impl Proxy {
                 packet.len(),
             );
 
-
             if let Some(flow_id) = flow_id {
                 let fh = match self.flows.get_mut(&flow_id) {
                     Some(v) => v,
@@ -212,7 +214,12 @@ impl Proxy {
                 .expect(format!("flow_id {:?} in HashSet but not in HashMap", flow_id).as_str());
             while let Some((id, packet)) = fh.emit(now) {
                 match self.queue.write(&packet) {
-                    Ok(written) => trace!("Emitted packet {:?}-{} with {}B to tun", flow_id, id, written),
+                    Ok(written) => trace!(
+                        "Emitted packet {:?}-{} with {}B to tun",
+                        flow_id,
+                        id,
+                        written
+                    ),
                     Err(e) => error!("Failed writing to tun: {}", e),
                 }
             }
