@@ -1,7 +1,10 @@
+use quiche::Connection;
 use quiche::PathStatus;
 use ring::rand::SecureRandom;
 use serde::Deserialize;
 use serde::Serialize;
+use slab::Slab;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 
@@ -17,7 +20,10 @@ use zstd::stream::Encoder;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
+use crate::common;
 use crate::perf::TestConfig;
+use crate::sendto;
+use crate::sendto::SocketState;
 
 pub const MAX_BUF_SIZE: usize = 65507;
 
@@ -440,4 +446,207 @@ impl KeepAlive {
             error!("Failed to probe idle paths: {}", e)
         }
     }
+}
+
+pub fn configure_local_sockets(
+    local_addrs: Vec<SocketAddr>,
+    pacing: bool,
+    enable_gso: bool,
+) -> Result<
+    (
+        Vec<SocketAddr>,
+        Slab<SocketState>,
+        HashMap<SocketAddr, usize>,
+    ),
+    String,
+> {
+    let mut enable_gso = enable_gso;
+    // TODO: replace Slab with Vec
+    let mut sockets: Slab<SocketState> = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
+    let mut src_addr_tokens = HashMap::new();
+
+    // Set SO_TXTIME socket option on the listening UDP socket for pacing
+    // outgoing packets.
+
+    let mut addrs = Vec::new();
+    for src_addr in local_addrs {
+        let socket = match mio::net::UdpSocket::bind(src_addr) {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(format!("failed binding UDP socket to {}: {}", src_addr, e));
+                // return Err(ServerError::FatalSocket(format!(
+                //     "failed binding UDP socket to {}: {}",
+                //     src_addr, e
+                // )))
+            }
+        };
+        let local_addr = socket.local_addr().unwrap();
+
+        match set_txtime_sockopt(&socket) {
+            Ok(_) => info!("successfully set SO_TXTIME socket option"),
+            Err(e) => error!("set SO_TXTIME socket option failed {:?}", e),
+        };
+        enable_gso &= sendto::detect_gso(&socket, MAX_DATAGRAM_SIZE);
+        info!("{} GSO", if enable_gso { "Enable" } else { "Disable" });
+
+        #[cfg(target_os = "linux")]
+        {
+            // Was client-only
+            let ifname = common::get_ifname_from_ip(local_addr);
+            if let Some(ifname) = ifname {
+                if let Err(e) = common::bind_socket_to_if(&socket, &ifname) {
+                    error!("{}: unable to bind {}: {}", ifname, local_addr, e);
+                } else {
+                    trace!("{}: bind {}", ifname, local_addr);
+                }
+            }
+
+            match common::set_socket_buf_size(&socket, common::UDPBufType::Rcv) {
+                Ok(v) => trace!("Set the UDP rcv buf size to {}", v),
+                Err(e) => warn!("{}", e),
+            };
+            match common::set_socket_buf_size(&socket, common::UDPBufType::Snd) {
+                Ok(v) => trace!("Set the UDP snd buf size to {}", v),
+                Err(e) => warn!("{}", e),
+            };
+        }
+
+        let socket_state = SocketState::new(socket, pacing, enable_gso);
+        let token = sockets.insert(socket_state);
+        src_addr_tokens.insert(local_addr, token);
+        addrs.push(local_addr);
+
+        info!("listening on {:}", local_addr);
+
+        // Disabled notifications on WRITABLE to stop poll.poll being waken up unnecessarily.
+        // This will lead to problems under heavy load, more specifically if writing to the UDP
+        // socket in `SocketState` returns WouldBlock. In these cases, the application should retry
+        // writing to that socket as soon as it's writable again.
+        // TODO: find a good solution to this problem
+        // poll.registry()
+        //     .register(
+        //         &mut sockets[token].socket,
+        //         mio::Token(token),
+        //         mio::Interest::READABLE, // .add(mio::Interest::WRITABLE),
+        //     )
+        //     .expect("Failed registering socket with mio");
+    }
+
+    Ok((addrs, sockets, src_addr_tokens))
+}
+
+pub fn send_on_sockets(
+    conn: &mut Connection,
+    max_send_burst: usize,
+    max_datagram_size: usize,
+    scheduler: &mut Box<dyn quiche::scheduler::MultipathScheduler>,
+    src_addr_tokens: &HashMap<SocketAddr, usize>,
+    sockets: &mut Slab<SocketState>,
+) -> Result<(), String> {
+    let mut continue_write = true;
+    while continue_write {
+        continue_write = false;
+
+        // The maximum amount of data that should be written in one burst with GSO.
+        // Explanation division and multiplication: https://github.com/cloudflare/quiche/pull/1213
+        // Applies to each socket individually.
+        let max_send_burst =
+            conn.send_quantum().min(max_send_burst) / max_datagram_size * max_datagram_size;
+
+        let mut it = 0;
+        while let Some((local_addr, peer_addr, send_instr)) = scheduler.get_best_path(conn) {
+            it += 1;
+
+            let token = src_addr_tokens[&local_addr];
+            let socket = &mut sockets[token];
+
+            if !socket.writable_for_dest(&peer_addr) {
+                // The socket has already data queued for sending. Only more packets toward the same
+                // destination can be queued.
+                break;
+            }
+
+            // TODO: get send quantum for that specific path
+
+            let buf = match socket.buf_until(max_send_burst) {
+                Some(v) => v,
+                None => {
+                    // We already wrote data up to `max_send_burst`. Send queued packets now but
+                    // continue to ask conn for more packets immediately afterwards before receiving
+                    // new packets.
+                    continue_write = true;
+                    break;
+                }
+            };
+
+            let (written, send_info) = match conn.send_on_path_with_instructions(
+                buf,
+                Some(local_addr),
+                Some(peer_addr),
+                Some(send_instr),
+            ) {
+                Ok(v) => v,
+
+                Err(quiche::Error::Done) => {
+                    trace!(
+                        "{}->{} {}, [{}], conn.send returned Done",
+                        local_addr,
+                        peer_addr,
+                        it,
+                        conn.trace_id()
+                    );
+                    break;
+                }
+
+                Err(e) => {
+                    error!("{} conn.send failed: {:?}", conn.trace_id(), e);
+                    conn.close(false, 0x1, b"fail").ok();
+                    // Not sure what's correct in this situation.
+                    break;
+                }
+            };
+
+            socket.buf_advance(written);
+            let _ = socket.send_info.get_or_insert(send_info);
+            socket.max_datagram_size = max_datagram_size;
+
+            trace!(
+                "{:}->{:} conn.send [{}] returned {} bytes, max_datagram_size={}",
+                send_info.from,
+                send_info.to,
+                it,
+                written,
+                max_datagram_size,
+            );
+
+            if !conn.is_established() {
+                trace!("Disabled GSO packet assembly during connection establishment");
+                continue_write = true;
+                break;
+            }
+
+            if !socket.extendable {
+                // https://github.com/cloudflare/quiche/commit/eac98fae15ce67ee774125c90db0d59c4deda5da
+                // The QUIC connection might has more data to write.
+                continue_write = true;
+
+                // No full-sized packet has been written; only the last packet can be less than
+                // max_datagram_size if we want to use GSO.
+                break;
+            }
+        }
+
+        // Try to send the queued data
+        for (_, token) in src_addr_tokens.iter() {
+            let socket = &mut sockets[*token];
+            if let Err(e) = socket.try_send() {
+                return Err(format!("socket.try_send failed: {:?}", e));
+                // return Err(ServerError::FatalSocket(format!(
+                //     "socket.try_send failed: {:?}",
+                //     e
+                // )));
+            }
+        }
+    }
+    Ok(())
 }

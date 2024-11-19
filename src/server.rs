@@ -1,12 +1,12 @@
 use std::net::SocketAddr;
 
 use crate::common;
+use crate::sendto::SocketState;
 
 use super::common::*;
 use super::sendto;
 use quiche::scheduler::MultipathScheduler;
 use quiche::RecvInfo;
-use quiche::SendInfo;
 use ring::rand::*;
 use slab::Slab;
 use std::collections::HashMap;
@@ -25,112 +25,6 @@ enum PacketRecvAction {
     NotInitial,
     VersionNegotiation,
     IOFail(String),
-}
-
-/// See `SocketState` in client.rs
-struct SocketState {
-    // Constant, set with new()
-    socket: mio::net::UdpSocket,
-    pacing: bool,
-    enable_gso: bool,
-
-    // Changed for each send
-    buf: [u8; MAX_BUF_SIZE],
-    until: usize,
-    send_info: Option<SendInfo>,
-    max_datagram_size: usize,
-
-    // `true` if more full-sized packets (= `max_datagram_size`) can be queueud on this path.
-    // With GSO, only the last packet can be tless than `max_datagram_size`.
-    extendable: bool,
-}
-
-impl SocketState {
-    fn new(socket: mio::net::UdpSocket, pacing: bool, enable_gso: bool) -> SocketState {
-        SocketState {
-            socket: socket,
-            pacing,
-            enable_gso,
-            buf: [0; MAX_BUF_SIZE],
-            until: 0,
-            send_info: None,
-            max_datagram_size: 0,
-            extendable: true,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.until = 0;
-        self.send_info = None;
-        self.max_datagram_size = 0;
-        self.extendable = true;
-    }
-
-    /// Returns whether a buffer is currently waiting to be written to the socket.
-    #[allow(dead_code)]
-    fn send_pending(&self) -> bool {
-        self.send_info.is_some()
-    }
-
-    // Returns whether more packets can be queued on this socket.
-    fn writable_for_dest(&self, peer_addr: &SocketAddr) -> bool {
-        let dest = match self.send_info {
-            Some(si) => si.to == *peer_addr,
-            None => true,
-        };
-        dest && self.extendable
-    }
-
-    // Returns the part of the `self.buf` for the next packet.
-    fn buf_until(&mut self, max_send_burst: usize) -> Option<&mut [u8]> {
-        // TODO: check self.extendable?
-        self.buf.get_mut(self.until..max_send_burst)
-        // &mut self.buf[self.until..max_send_burst]
-    }
-
-    // Advance the buffer after a packet has been written to `buf_until()`.
-    // Check if more packets can be queued.
-    fn buf_advance(&mut self, written: usize) {
-        self.until += written;
-        self.extendable = written == self.max_datagram_size;
-    }
-
-    /// Try to send the scheduled buffer, if it exists.
-    /// Returns `Ok(0)` if the socket returned `WouldBlock`.
-    fn try_send(&mut self) -> Result<usize, ServerError> {
-        let send_info = match self.send_info {
-            Some(v) => v,
-            None => return Ok(0),
-        };
-        match sendto::send_to(
-            &self.socket,
-            &self.buf[..self.until],
-            &send_info,
-            self.max_datagram_size,
-            self.pacing,
-            self.enable_gso,
-        ) {
-            Ok(n) => {
-                let to = self.send_info.unwrap();
-                trace!("{:}->{:} written {} bytes", to.from, to.to, self.until);
-                self.reset();
-                Ok(n)
-            }
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    // TODO: The data of "out" is thrown away, right? Should I handle this?
-                    // Is this assertion correct? It isn't, right?
-                    trace!("send() would block, will try_send again alter");
-                    return Ok(0);
-                }
-
-                return Err(ServerError::FatalSocket(format!(
-                    "send_to() failed: {:?}",
-                    e
-                )));
-            }
-        }
-    }
 }
 
 /// Holds state of one QUIC connection.
@@ -311,54 +205,11 @@ impl Server {
         qlog_setter: common::QlogSetter,
         scheduler: Box<dyn MultipathScheduler>,
     ) -> Result<Server, ServerError> {
-        let mut sockets: Slab<SocketState> =
-            Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
-        let mut src_addr_tokens = HashMap::new();
-
-        // Set SO_TXTIME socket option on the listening UDP socket for pacing
-        // outgoing packets.
-        let pacing = true;
-        let mut enable_gso = false;
-
-        let mut addrs = Vec::new();
-        for src_addr in local_addrs {
-            let socket = match mio::net::UdpSocket::bind(src_addr) {
+        let (addrs, sockets, src_addr_tokens) =
+            match common::configure_local_sockets(local_addrs, true, true) {
                 Ok(v) => v,
-                Err(e) => {
-                    return Err(ServerError::FatalSocket(format!(
-                        "failed binding UDP socket to {}: {}",
-                        src_addr, e
-                    )))
-                }
+                Err(e) => return Err(ServerError::FatalSocket(e)),
             };
-            let local_addr = socket.local_addr().unwrap();
-
-            match set_txtime_sockopt(&socket) {
-                Ok(_) => debug!("successfully set SO_TXTIME socket option"),
-                Err(e) => error!("set SO_TXTIME socket option failed {:?}", e),
-            };
-            enable_gso &= sendto::detect_gso(&socket, MAX_DATAGRAM_SIZE);
-            info!("{} GSO", if enable_gso { "Enable" } else { "Disable" });
-
-            #[cfg(target_os = "linux")]
-            {
-                match common::set_socket_buf_size(&socket, common::UDPBufType::Rcv) {
-                    Ok(v) => trace!("Set the UDP rcv buf size to {}", v),
-                    Err(e) => warn!("{}", e),
-                };
-                match common::set_socket_buf_size(&socket, common::UDPBufType::Snd) {
-                    Ok(v) => trace!("Set the UDP snd buf size to {}", v),
-                    Err(e) => warn!("{}", e),
-                };
-            }
-
-            let socket_state = SocketState::new(socket, pacing, enable_gso);
-            let token = sockets.insert(socket_state);
-            src_addr_tokens.insert(local_addr, token);
-            addrs.push(local_addr);
-
-            info!("listening on {:}", local_addr);
-        }
 
         let rng = SystemRandom::new();
         let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
@@ -397,51 +248,6 @@ impl Server {
                 .unwrap();
         }
     }
-
-    // pub fn poll(&mut self, events: &mut mio::Events) -> Result<(), ServerError> {
-    //     // Find the shorter timeout from all the active connections.
-    //     let timeout = self.clients.values().filter_map(|c| c.conn.timeout()).min();
-
-    //     // let send_pending = self.sockets.iter().fold(false, |acc, (_, s)| acc || s.send_pending());
-
-    //     let poll_start = std::time::Instant::now();
-    //     if let Err(e) = self.poll.poll(events, timeout) {
-    //         if e.kind() != std::io::ErrorKind::Interrupted {
-    //             return Err(ServerError::Unexpected(format!(
-    //                 "Poll returned error: {}",
-    //                 e
-    //             )));
-    //         }
-    //     }
-    //     let poll_duration = poll_start.elapsed();
-    //     // let (readable, writable) = events.iter().fold(
-    //     //     (false, false),
-    //     //     |(readable, writable), e| (readable || e.is_readable(), writable || e.is_writable()));
-
-    //     trace!(
-    //         "timeout {:?}, slept {} ms, ev={} (r={}, w={})",
-    //         timeout,
-    //         poll_duration.as_millis(),
-    //         !events.is_empty(),
-    //         "?", // readable,
-    //         "?", // writable,
-    //     );
-
-    //     let conn_timeout_expired = timeout.map_or(false, |t| {
-    //         t.saturating_sub(poll_duration) == std::time::Duration::ZERO
-    //     });
-
-    //     if events.is_empty() && conn_timeout_expired {
-    //         trace!(
-    //             "timed out after {} ms, events_empty={}",
-    //             poll_duration.as_millis(),
-    //             events.is_empty()
-    //         );
-    //         self.clients.values_mut().for_each(|c| c.conn.on_timeout());
-    //     }
-
-    //     Ok(())
-    // }
 
     /// If a send is pending, this will try sending. If not, nothing is done.
     pub fn on_writable(&mut self, token: usize) -> Result<(), ServerError> {
@@ -657,113 +463,15 @@ impl Server {
             //             prev_max_send_burst, client.max_send_burst, prev_loss_rate, loss_rate);
             // }
 
-            let mut continue_write = true;
-            while continue_write {
-                continue_write = false;
-
-                // The maximum amount of data that should be written in one burst with GSO.
-                // Explanation division and multiplication: https://github.com/cloudflare/quiche/pull/1213
-                // Applies to each socket individually.
-                let max_send_burst = client.conn.send_quantum().min(client.max_send_burst)
-                    / client.max_datagram_size
-                    * client.max_datagram_size;
-
-                let mut it = 0;
-                while let Some((local_addr, peer_addr, send_instr)) =
-                    self.scheduler.get_best_path(&mut client.conn)
-                {
-                    it += 1;
-
-                    let token = self.src_addr_tokens[&local_addr];
-                    let socket = &mut self.sockets[token];
-
-                    if !socket.writable_for_dest(&peer_addr) {
-                        // The socket has already data queued for sending. Only more packets toward the same
-                        // destination can be queued.
-                        break;
-                    }
-
-                    // TODO: get send quantum for that specific path
-
-                    let buf = match socket.buf_until(max_send_burst) {
-                        Some(v) => v,
-                        None => {
-                            // We already wrote data up to `max_send_burst`. Send queued packets now but
-                            // continue to ask conn for more packets immediately afterwards before receiving
-                            // new packets.
-                            continue_write = true;
-                            break;
-                        }
-                    };
-
-                    let (written, send_info) = match client.conn.send_on_path_with_instructions(
-                        buf,
-                        Some(local_addr),
-                        Some(peer_addr),
-                        Some(send_instr),
-                    ) {
-                        Ok(v) => v,
-
-                        Err(quiche::Error::Done) => {
-                            trace!(
-                                "{}->{} {}, [{}], conn.send returned Done",
-                                local_addr,
-                                peer_addr,
-                                it,
-                                client.conn.trace_id()
-                            );
-                            break;
-                        }
-
-                        Err(e) => {
-                            error!("{} conn.send failed: {:?}", client.conn.trace_id(), e);
-                            client.conn.close(false, 0x1, b"fail").ok();
-                            // Not sure what's correct in this situation.
-                            break;
-                        }
-                    };
-
-                    socket.buf_advance(written);
-                    let _ = socket.send_info.get_or_insert(send_info);
-                    socket.max_datagram_size = client.max_datagram_size;
-
-                    trace!(
-                        "{:}->{:} conn.send [{}] returned {} bytes, max_datagram_size={}",
-                        send_info.from,
-                        send_info.to,
-                        it,
-                        written,
-                        client.max_datagram_size,
-                    );
-
-                    if !client.conn.is_established() {
-                        trace!("Disabled GSO packet assembly during connection establishment");
-                        continue_write = true;
-                        break;
-                    }
-
-                    if !socket.extendable {
-                        // https://github.com/cloudflare/quiche/commit/eac98fae15ce67ee774125c90db0d59c4deda5da
-                        // The QUIC connection might has more data to write.
-                        continue_write = true;
-
-                        // No full-sized packet has been written; only the last packet can be less than
-                        // max_datagram_size if we want to use GSO.
-                        break;
-                    }
-                }
-
-                // Try to send the queued data
-                for (_, token) in self.src_addr_tokens.iter() {
-                    let socket = &mut self.sockets[*token];
-                    if let Err(e) = socket.try_send() {
-                        return Err(ServerError::FatalSocket(format!(
-                            "socket.try_send failed: {:?}",
-                            e
-                        )));
-                    }
-                }
-            }
+            common::send_on_sockets(
+                &mut client.conn,
+                client.max_send_burst,
+                client.max_datagram_size,
+                &mut self.scheduler,
+                &self.src_addr_tokens,
+                &mut self.sockets,
+            )
+            .map_err(|e| ServerError::FatalSocket(e))?;
         }
         Ok(())
     }
