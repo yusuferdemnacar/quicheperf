@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
-use crate::common;
-use crate::sendto::SocketState;
+use crate::socket::SocketState;
+use crate::{common, socket};
 
 use super::common::*;
 use quiche::scheduler::MultipathScheduler;
@@ -204,8 +204,9 @@ impl Server {
         qlog_setter: common::QlogSetter,
         scheduler: Box<dyn MultipathScheduler>,
     ) -> Result<Server, ServerError> {
+        let enable_gso = true;
         let (_addrs, sockets, src_addr_tokens) =
-            match common::configure_local_sockets(local_addrs, true, true) {
+            match socket::configure_local_sockets(local_addrs, true, enable_gso) {
                 Ok(v) => v,
                 Err(e) => return Err(ServerError::FatalSocket(e)),
             };
@@ -462,7 +463,7 @@ impl Server {
             //             prev_max_send_burst, client.max_send_burst, prev_loss_rate, loss_rate);
             // }
 
-            common::send_on_sockets(
+            crate::socket::send_on_socket(
                 &mut client.conn,
                 client.max_send_burst,
                 client.max_datagram_size,

@@ -33,8 +33,8 @@ mod client;
 mod common;
 mod perf;
 mod proxy;
-mod sendto;
 mod server;
+mod socket;
 mod ui;
 
 use std::cmp::min;
@@ -326,7 +326,7 @@ fn main() -> ExitCode {
             }
             .map_err(|e| format!("Failed to parse port from {}: {}", local_addr, e))?;
 
-            match common::get_ip_from_ifname(intf_name.to_string(), port) {
+            match socket::get_ip_from_ifname(intf_name.to_string(), port) {
                 Some(v) => {
                     info!("{}: use {}:{}", local_addr, v, port);
                     Ok(v)

@@ -1,6 +1,5 @@
 use crate::common;
-use crate::common::*;
-use crate::sendto::SocketState;
+use crate::socket;
 use itertools::Itertools;
 use quiche::scheduler::MultipathScheduler;
 use ring::rand::*;
@@ -21,7 +20,7 @@ pub struct Client {
     peer_addrs: Vec<SocketAddr>,
 
     pub conn: quiche::Connection,
-    sockets: Slab<SocketState>,
+    sockets: Slab<socket::SocketState>,
     src_addr_tokens: HashMap<SocketAddr, usize>,
     app_data_start: Option<Instant>,
     recv_buf: [u8; 65535],
@@ -33,16 +32,17 @@ impl Client {
     pub fn new(
         local_addrs: Vec<SocketAddr>,
         peer_addrs: Vec<SocketAddr>,
-        qlog_setter: QlogSetter,
+        qlog_setter: common::QlogSetter,
         mut config: quiche::Config,
     ) -> Result<Client, ClientError> {
+        let enable_gso = true;
         let (addrs, sockets, src_addr_tokens) =
-            match common::configure_local_sockets(local_addrs, true, false) {
+            match socket::configure_local_sockets(local_addrs, true, enable_gso) {
                 Ok(v) => v,
                 Err(e) => return Err(ClientError::Other(e)),
             };
 
-        let (local_addr, peer_addr) = common::match_local_peer_ip_version(
+        let (local_addr, peer_addr) = socket::match_local_peer_ip_version(
             *addrs.first().unwrap(),
             *peer_addrs.first().unwrap(),
         )
@@ -55,7 +55,7 @@ impl Client {
         let scid = gen_scid(&rng);
         let mut conn = quiche::connect(None, &scid, local_addr, peer_addr, &mut config).unwrap();
 
-        let mut keylog = configure_keylog();
+        let mut keylog = common::configure_keylog();
         if let Some(keylog) = &mut keylog {
             if let Ok(keylog) = keylog.try_clone() {
                 conn.set_keylog(Box::new(keylog));
@@ -195,7 +195,7 @@ impl Client {
 
         // Provides as many CIDs as possible.
         while self.conn.source_cids_left() > 0 {
-            let (scid, reset_token) = generate_cid_and_reset_token(&self.rng);
+            let (scid, reset_token) = common::generate_cid_and_reset_token(&self.rng);
 
             if self.conn.new_source_cid(&scid, reset_token, false).is_err() {
                 break;
@@ -243,7 +243,7 @@ impl Client {
 
     pub fn probe_paths_if_necessary(&mut self) -> Result<(), ClientError> {
         if self.probed_paths < self.local_addrs.len() {
-            let (local_addr, peer_addr) = common::match_local_peer_ip_version(
+            let (local_addr, peer_addr) = socket::match_local_peer_ip_version(
                 self.local_addrs[self.probed_paths],
                 self.peer_addrs[self.probed_paths],
             )
@@ -283,7 +283,7 @@ impl Client {
 
     /// Generate outgoing QUIC packets and send them on the UDP socket.
     pub fn send(&mut self, scheduler: &mut Box<dyn MultipathScheduler>) -> Result<(), ClientError> {
-        common::send_on_sockets(
+        socket::send_on_socket(
             &mut self.conn,
             common::MAX_BUF_SIZE,
             common::MAX_DATAGRAM_SIZE,
