@@ -37,7 +37,7 @@ impl Client {
         mut config: quiche::Config,
     ) -> Result<Client, ClientError> {
         let (addrs, sockets, src_addr_tokens) =
-            match common::configure_local_sockets(local_addrs, true, true) {
+            match common::configure_local_sockets(local_addrs, true, false) {
                 Ok(v) => v,
                 Err(e) => return Err(ClientError::Other(e)),
             };

@@ -4,7 +4,6 @@ use crate::common;
 use crate::sendto::SocketState;
 
 use super::common::*;
-use super::sendto;
 use quiche::scheduler::MultipathScheduler;
 use quiche::RecvInfo;
 use ring::rand::*;
@@ -205,7 +204,7 @@ impl Server {
         qlog_setter: common::QlogSetter,
         scheduler: Box<dyn MultipathScheduler>,
     ) -> Result<Server, ServerError> {
-        let (addrs, sockets, src_addr_tokens) =
+        let (_addrs, sockets, src_addr_tokens) =
             match common::configure_local_sockets(local_addrs, true, true) {
                 Ok(v) => v,
                 Err(e) => return Err(ServerError::FatalSocket(e)),

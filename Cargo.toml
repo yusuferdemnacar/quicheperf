@@ -29,7 +29,7 @@ ring = "0.16"
 quiche = { path = "../quiche/quiche", default-features = false, features=["boringssl-vendored"] } #  "boringssl-boring-crate"
 qlog = { path = "../quiche/qlog" }
 libc = "0.2"
-nix = { version = "0.27.1", features = ["uio", "net"] }
+nix = { version = "0.27.1", features = ["uio", "net", "socket"] }
 slab = "0.4"
 itertools = "0.10"
 serde = { version = "1", features = ["derive"] }

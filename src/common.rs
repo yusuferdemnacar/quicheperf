@@ -66,6 +66,17 @@ pub fn set_txtime_sockopt(sock: &mio::net::UdpSocket) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
+fn set_txtime_sockopt(_: &mio::net::UdpSocket) -> io::Result<()> {
+    use std::io::Error;
+    use std::io::ErrorKind;
+
+    Err(Error::new(
+        ErrorKind::Other,
+        "Not supported on this platform",
+    ))
+}
+
 const DESIRED_RCV_BUF_SIZE: usize = 10_000_000;
 const DESIRED_SND_BUF_SIZE: usize = 10_000_000;
 
@@ -460,7 +471,6 @@ pub fn configure_local_sockets(
     ),
     String,
 > {
-    let mut enable_gso = enable_gso;
     // TODO: replace Slab with Vec
     let mut sockets: Slab<SocketState> = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
     let mut src_addr_tokens = HashMap::new();
@@ -473,7 +483,7 @@ pub fn configure_local_sockets(
         let socket = match mio::net::UdpSocket::bind(src_addr) {
             Ok(v) => v,
             Err(e) => {
-                return Err(format!("failed binding UDP socket to {}: {}", src_addr, e));
+                return Err(format!("Failed binding UDP socket to {}: {}", src_addr, e));
                 // return Err(ServerError::FatalSocket(format!(
                 //     "failed binding UDP socket to {}: {}",
                 //     src_addr, e
@@ -482,18 +492,17 @@ pub fn configure_local_sockets(
         };
         let local_addr = socket.local_addr().unwrap();
 
-        match set_txtime_sockopt(&socket) {
-            Ok(_) => info!("successfully set SO_TXTIME socket option"),
-            Err(e) => error!("set SO_TXTIME socket option failed {:?}", e),
-        };
-        enable_gso &= sendto::detect_gso(&socket, MAX_DATAGRAM_SIZE);
-        info!("{} GSO", if enable_gso { "Enable" } else { "Disable" });
+        if let Err(e) = set_txtime_sockopt(&socket) {
+            error!("set SO_TXTIME socket option failed {:?}", e);
+        }
+        if enable_gso && !sendto::detect_gso(&socket, MAX_DATAGRAM_SIZE) {
+            error!("GSO can not be used with socket {}", src_addr);
+        }
 
         #[cfg(target_os = "linux")]
         {
             // Was client-only
-            let ifname = common::get_ifname_from_ip(local_addr);
-            if let Some(ifname) = ifname {
+            if let Some(ifname) = common::get_ifname_from_ip(local_addr) {
                 if let Err(e) = common::bind_socket_to_if(&socket, &ifname) {
                     error!("{}: unable to bind {}: {}", ifname, local_addr, e);
                 } else {
@@ -516,7 +525,11 @@ pub fn configure_local_sockets(
         src_addr_tokens.insert(local_addr, token);
         addrs.push(local_addr);
 
-        info!("listening on {:}", local_addr);
+        info!(
+            "Listening on {:}, GSO {}",
+            local_addr,
+            if enable_gso { "enabled" } else { "disabled" }
+        );
 
         // Disabled notifications on WRITABLE to stop poll.poll being waken up unnecessarily.
         // This will lead to problems under heavy load, more specifically if writing to the UDP
@@ -606,8 +619,7 @@ pub fn send_on_sockets(
                 }
             };
 
-            socket.buf_advance(written);
-            let _ = socket.send_info.get_or_insert(send_info);
+            socket.buf_advance(written, &send_info);
             socket.max_datagram_size = max_datagram_size;
 
             trace!(
