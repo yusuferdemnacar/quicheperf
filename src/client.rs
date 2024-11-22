@@ -32,15 +32,21 @@ impl Client {
     pub fn new(
         local_addrs: Vec<SocketAddr>,
         peer_addrs: Vec<SocketAddr>,
+        bind_to_intf: bool,
         qlog_setter: common::QlogSetter,
         mut config: quiche::Config,
     ) -> Result<Client, ClientError> {
         let enable_gso = true;
-        let (addrs, sockets, src_addr_tokens) =
-            match socket::configure_local_sockets(local_addrs, true, enable_gso) {
-                Ok(v) => v,
-                Err(e) => return Err(ClientError::Other(e)),
-            };
+        let enable_pacing = true;
+        let (addrs, sockets, src_addr_tokens) = match socket::configure_local_sockets(
+            local_addrs,
+            enable_pacing,
+            enable_gso,
+            bind_to_intf,
+        ) {
+            Ok(v) => v,
+            Err(e) => return Err(ClientError::Other(e)),
+        };
 
         let (local_addr, peer_addr) = socket::match_local_peer_ip_version(
             *addrs.first().unwrap(),

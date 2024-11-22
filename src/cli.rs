@@ -85,6 +85,10 @@ pub struct Args {
     #[arg(short, default_value = "[::]:0", global = true)]
     pub local_addrs: Vec<String>,
 
+    /// Bind the UDP sockets to an interface (SO_BINDTODEVICE).
+    #[arg(long = "bind", default_value = "true", global = true, value_parser=parse_bool, action = ArgAction::Set)]
+    pub bind_to_intf: bool,
+
     // --- LOG_HEADING ---
     /// Log to file with level trace
     #[arg(long, global = true, help_heading = LOG_HEADING)]

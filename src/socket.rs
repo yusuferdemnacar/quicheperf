@@ -587,6 +587,7 @@ pub fn configure_local_sockets(
     local_addrs: Vec<SocketAddr>,
     pacing: bool,
     enable_gso: bool,
+    bind_to_intf: bool,
 ) -> Result<
     (
         Vec<SocketAddr>,
@@ -621,13 +622,16 @@ pub fn configure_local_sockets(
 
         #[cfg(target_os = "linux")]
         {
-            // Was client-only
-            if let Some(ifname) = get_ifname_from_ip(local_addr) {
-                if let Err(e) = bind_socket_to_if(&socket, &ifname) {
-                    error!("{}: unable to bind {}: {}", ifname, local_addr, e);
-                } else {
-                    trace!("{}: bind {}", ifname, local_addr);
+            if bind_to_intf {
+                if let Some(ifname) = get_ifname_from_ip(local_addr) {
+                    if let Err(e) = bind_socket_to_if(&socket, &ifname) {
+                        error!("{}: unable to bind {}: {}", ifname, local_addr, e);
+                    } else {
+                        trace!("{}: bind {}", ifname, local_addr);
+                    }
                 }
+            } else {
+                trace!("Not binding to interface");
             }
 
             match set_socket_buf_size(&socket, UDPBufType::Rcv) {

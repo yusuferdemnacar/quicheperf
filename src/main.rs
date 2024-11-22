@@ -398,14 +398,19 @@ fn main() -> ExitCode {
 
             quiche_config.set_application_protos(&perf::ALPN).unwrap();
 
-            let client =
-                match client::Client::new(local_addrs, peer_addrs, qlog_setter, quiche_config) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        error!("Failed creating client: {:?}", e);
-                        return ExitCode::FAILURE;
-                    }
-                };
+            let client = match client::Client::new(
+                local_addrs,
+                peer_addrs,
+                args.bind_to_intf,
+                qlog_setter,
+                quiche_config,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed creating client: {:?}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
 
             return match perf_client(client, scheduler, tc, psu, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
@@ -428,6 +433,7 @@ fn main() -> ExitCode {
             let server = match server::Server::new(
                 local_addrs,
                 args.password,
+                args.bind_to_intf,
                 quiche_config,
                 qlog_setter,
                 scheduler,
@@ -467,8 +473,14 @@ fn main() -> ExitCode {
 
             quiche_config.set_application_protos(&proxy::ALPN).unwrap();
 
-            let client =
-                client::Client::new(local_addrs, peer_addrs, qlog_setter, quiche_config).unwrap();
+            let client = client::Client::new(
+                local_addrs,
+                peer_addrs,
+                args.bind_to_intf,
+                qlog_setter,
+                quiche_config,
+            )
+            .unwrap();
 
             return match proxy_client(client, scheduler, tun, flow_handler, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
@@ -497,6 +509,7 @@ fn main() -> ExitCode {
             let server = match server::Server::new(
                 local_addrs,
                 args.password,
+                args.bind_to_intf,
                 quiche_config,
                 qlog_setter,
                 scheduler,

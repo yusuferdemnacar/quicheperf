@@ -200,16 +200,22 @@ impl Server {
     pub fn new(
         local_addrs: Vec<SocketAddr>,
         password: Option<String>,
+        bind_to_intf: bool,
         config: quiche::Config,
         qlog_setter: common::QlogSetter,
         scheduler: Box<dyn MultipathScheduler>,
     ) -> Result<Server, ServerError> {
         let enable_gso = true;
-        let (_addrs, sockets, src_addr_tokens) =
-            match socket::configure_local_sockets(local_addrs, true, enable_gso) {
-                Ok(v) => v,
-                Err(e) => return Err(ServerError::FatalSocket(e)),
-            };
+        let enable_pacing = true;
+        let (_addrs, sockets, src_addr_tokens) = match socket::configure_local_sockets(
+            local_addrs,
+            enable_pacing,
+            enable_gso,
+            bind_to_intf,
+        ) {
+            Ok(v) => v,
+            Err(e) => return Err(ServerError::FatalSocket(e)),
+        };
 
         let rng = SystemRandom::new();
         let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
