@@ -257,7 +257,13 @@ pub fn detect_gso(socket: &mio::net::UdpSocket, segment_size: usize) -> bool {
     use std::os::unix::io::BorrowedFd;
 
     let fd = &unsafe { BorrowedFd::borrow_raw(socket.as_raw_fd()) };
-    setsockopt(fd, UdpGsoSegment, &(segment_size as i32)).is_ok()
+    let availability = setsockopt(fd, UdpGsoSegment, &(segment_size as i32)).is_ok();
+    // Reverse setsockopt to be able to choose if GSO should be used on each send call
+    match setsockopt(fd, UdpGsoSegment, &0) {
+        Ok(_) => {}
+        Err(e) => error!("reversing sockopt UdpGsoSegment failed: {e}"),
+    };
+    availability
 }
 
 /// For non-Linux, there is no GSO support.
@@ -497,11 +503,30 @@ impl SocketState {
                     );
                     Ok(written)
                 }
-                Err(e) => Err(format!("send_to_gso_pacing failed: {:?}", e)),
+                Err(e) => {
+                    warn!("send_to_gso_pacing failed, trying again without: {:?}", e);
+                    self.enable_gso = false;
+                    self.try_send()
+                }
             }
         } else {
-            self.send_individually(buf, dest)
-                .map_err(|e| format!("send_individually failed: {:?}", e))
+            match self.send_individually(buf, dest) {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    if self.pacing {
+                        warn!("sendmsg with pacing failed, trying again without: {:?}", e);
+                        self.pacing = false;
+                        self.try_send()
+                    } else {
+                        Err(format!(
+                            "send_individually failed from {:?} to {}: {:?}",
+                            self.socket.local_addr(),
+                            dest,
+                            e
+                        ))
+                    }
+                }
+            }
         }?;
 
         self.reset();
@@ -572,9 +597,6 @@ pub fn configure_local_sockets(
 > {
     let mut sockets: Slab<SocketState> = Slab::with_capacity(std::cmp::max(local_addrs.len(), 1));
     let mut src_addr_tokens = HashMap::new();
-
-    // Set SO_TXTIME socket option on the listening UDP socket for pacing
-    // outgoing packets.
 
     let mut addrs = Vec::new();
     for src_addr in local_addrs {
