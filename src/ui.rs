@@ -1,6 +1,6 @@
 use crate::perf::TestConfig;
 use itertools::Itertools;
-use quiche::scheduler::{MultipathScheduler, SchedulingDecisions};
+use quiche::scheduler::SchedulingDecisions;
 use std::collections::HashMap;
 use std::io;
 use std::io::{Result, Write};
@@ -213,7 +213,6 @@ impl<'a> UIExecutor<'a> {
     pub fn update(
         &mut self,
         conn: &quiche::Connection,
-        scheduler: Option<&mut Box<dyn MultipathScheduler>>,
         elapsed: Duration,
     ) -> Result<()> {
         let update_due = self.last_update.map_or(true, |v| v.elapsed() > UPDATE_FREQ);
@@ -221,13 +220,14 @@ impl<'a> UIExecutor<'a> {
             return Ok(());
         }
 
-        let scheduled = if let Some(s) = scheduler {
-            s.pop_scheduling_decisions()
-        } else {
-            SchedulingDecisions::default()
-        };
+        // TODO: reenable getting scheduling info
+        // let scheduled = if let Some(s) = scheduler {
+        //     s.pop_scheduling_decisions()
+        // } else {
+        //     SchedulingDecisions::default()
+        // };
 
-        self.ui.print_update(conn, scheduled, elapsed)?;
+        self.ui.print_update(conn, SchedulingDecisions::default(), elapsed)?;
 
         if conn.is_draining() && !self.draining_line_printed {
             writeln!(io::stdout(), "Connection is draining ...")?;

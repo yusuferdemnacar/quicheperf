@@ -4,7 +4,6 @@ use crate::socket::SocketState;
 use crate::{common, socket};
 
 use super::common::*;
-use quiche::scheduler::MultipathScheduler;
 use quiche::RecvInfo;
 use ring::rand::*;
 use slab::Slab;
@@ -177,7 +176,6 @@ type ClientMap = HashMap<ClientId, Client>;
 pub struct Server {
     password: Option<String>,
     config: quiche::Config,
-    scheduler: Box<dyn MultipathScheduler>,
 
     sockets: Slab<SocketState>,
     src_addr_tokens: HashMap<SocketAddr, usize>,
@@ -203,7 +201,6 @@ impl Server {
         bind_to_intf: bool,
         config: quiche::Config,
         qlog_setter: common::QlogSetter,
-        scheduler: Box<dyn MultipathScheduler>,
     ) -> Result<Server, ServerError> {
         let enable_gso = true;
         let enable_pacing = true;
@@ -223,7 +220,6 @@ impl Server {
         Ok(Server {
             password,
             config,
-            scheduler,
 
             sockets,
             src_addr_tokens,
@@ -469,14 +465,26 @@ impl Server {
             //             prev_max_send_burst, client.max_send_burst, prev_loss_rate, loss_rate);
             // }
 
-            crate::socket::send_on_socket(
-                &mut client.conn,
-                client.max_send_burst,
-                client.max_datagram_size,
-                &mut self.scheduler,
-                &self.src_addr_tokens,
-                &mut self.sockets,
-            )
+            match client.conn.scheduler {
+                quiche::scheduler::Scheduler::Packet(_) => {
+                    socket::send_packet_scheduler(
+                        &mut client.conn,
+                        client.max_send_burst,
+                        client.max_datagram_size,
+                        &self.src_addr_tokens,
+                        &mut self.sockets,
+                    )
+                },
+                quiche::scheduler::Scheduler::Frame(_) => {
+                    socket::send_frame_scheduler(
+                        &mut client.conn,
+                        client.max_send_burst,
+                        client.max_datagram_size,
+                        &self.src_addr_tokens,
+                        &mut self.sockets,
+                    )
+                },
+            }
             .map_err(|e| ServerError::FatalSocket(e))?;
         }
         Ok(())

@@ -60,7 +60,7 @@ use log4rs::config::{Appender, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log4rs::filter::threshold::ThresholdFilter;
 use perf::Perf;
-use quiche::scheduler::{self, MultipathScheduler};
+use quiche::scheduler::{self, SchedulerAlgo};
 use server::{Server, ServerError};
 use std::net::SocketAddr;
 use ui::UIExecutor;
@@ -104,7 +104,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     config.set_disable_active_migration(false);
 
     // get_bool(--mp) -> is the flag present?
-    let implicitely_mp = !args.multipath && args.local_addrs.len() > 1;
+    let implicitely_mp = !args.multipath && args.local_addrs.len() > 1 || args.pscheduler.is_some() || args.fscheduler.is_some();
     let explicitly_mp = args.multipath;
     if implicitely_mp || explicitly_mp {
         config.set_multipath(true);
@@ -113,6 +113,11 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
         config.set_multipath(false);
     }
 
+    if let Some(s) = args.pscheduler {
+        config.set_multipath_scheduler(SchedulerAlgo::PacketScheduler(s));
+    } else if let Some(s) = args.fscheduler {
+        config.set_multipath_scheduler(SchedulerAlgo::FrameScheduler(s));
+    }
     // config.enable_owd();
 
     if let Ok(cwnd) = args.congestion.parse::<usize>() {
@@ -347,14 +352,6 @@ fn main() -> ExitCode {
         }
     };
 
-    let scheduler: Box<dyn scheduler::MultipathScheduler> =
-        match args.scheduler.unwrap_or(cli::SchedulerOpts::MinRTT) {
-            cli::SchedulerOpts::Blest => Box::new(scheduler::Blest::new()),
-            cli::SchedulerOpts::MinRTT => Box::new(scheduler::MinRTT::new()),
-            cli::SchedulerOpts::RoundRobin => Box::new(scheduler::RoundRobin::new()),
-            cli::SchedulerOpts::BestPath => Box::new(scheduler::BestPath::new()),
-        };
-
     let qlog_setter = common::QlogSetter::new(args.qlogdir, args.compress_qlogs);
 
     match args.commands {
@@ -412,7 +409,7 @@ fn main() -> ExitCode {
                 }
             };
 
-            return match perf_client(client, scheduler, tc, psu, terminate) {
+            return match perf_client(client, tc, psu, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
@@ -436,7 +433,6 @@ fn main() -> ExitCode {
                 args.bind_to_intf,
                 quiche_config,
                 qlog_setter,
-                scheduler,
             ) {
                 Ok(v) => v,
                 Err(e) => {
@@ -482,7 +478,7 @@ fn main() -> ExitCode {
             )
             .unwrap();
 
-            return match proxy_client(client, scheduler, tun, flow_handler, terminate) {
+            return match proxy_client(client, tun, flow_handler, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
@@ -512,7 +508,6 @@ fn main() -> ExitCode {
                 args.bind_to_intf,
                 quiche_config,
                 qlog_setter,
-                scheduler,
             ) {
                 Ok(v) => v,
                 Err(e) => {
@@ -538,7 +533,6 @@ fn main() -> ExitCode {
 
 fn perf_client(
     mut client: Client,
-    mut scheduler: Box<dyn MultipathScheduler>,
     tc: TestConfig,
     mut psu: PathStatusUpdater,
     terminate: Arc<AtomicBool>,
@@ -553,7 +547,7 @@ fn perf_client(
 
     let mut protocol: Option<Perf> = None;
 
-    client.connect(&mut scheduler)?;
+    client.connect()?;
 
     loop {
         if terminate.load(Ordering::SeqCst) && client.conn.local_error().is_none() {
@@ -564,7 +558,6 @@ fn perf_client(
         if let Some(ref p) = protocol {
             ui.update(
                 &client.conn,
-                Some(&mut scheduler),
                 p.test_duration_elapsed(),
             )
             .ok();
@@ -648,7 +641,7 @@ fn perf_client(
             protocol.client_dispatch(&mut client.conn);
         }
 
-        client.send(&mut scheduler)?;
+        client.send()?;
     }
 
     client.on_close()?;
@@ -751,7 +744,6 @@ fn perf_server(
 
 fn proxy_client(
     mut client: Client,
-    mut scheduler: Box<dyn MultipathScheduler>,
     tun: String,
     flow_handler: FlowHandlerOpts,
     terminate: Arc<AtomicBool>,
@@ -776,7 +768,7 @@ fn proxy_client(
     let start = Instant::now();
 
     // Setup proxy protocol
-    client.connect(&mut scheduler)?;
+    client.connect()?;
 
     loop {
         if terminate.load(Ordering::SeqCst) && client.conn.local_error().is_none() {
@@ -785,7 +777,7 @@ fn proxy_client(
         }
 
         if alpn_negotiated {
-            ui.update(&client.conn, Some(&mut scheduler), start.elapsed())
+            ui.update(&client.conn, start.elapsed())
                 .ok();
         }
 
@@ -898,7 +890,7 @@ fn proxy_client(
                 .map_err(|e| ClientError::IOFail(e))?;
         }
 
-        client.send(&mut scheduler)?;
+        client.send()?;
     }
 
     client.on_close()?;
@@ -1056,7 +1048,7 @@ fn proxy_server(
                 ui.reset();
                 current_ui_client = *key;
             }
-            ui.update(&client.conn, None, start.elapsed()).ok();
+            ui.update(&client.conn, start.elapsed()).ok();
         }
 
         let client_collected = server.garbage_collect();

@@ -1,7 +1,6 @@
 use crate::common;
 use crate::socket;
 use itertools::Itertools;
-use quiche::scheduler::MultipathScheduler;
 use ring::rand::*;
 use slab::Slab;
 use std::collections::HashMap;
@@ -121,7 +120,6 @@ impl Client {
 
     pub fn connect(
         &mut self,
-        scheduler: &mut Box<dyn MultipathScheduler>,
     ) -> Result<(), ClientError> {
         info!(
             "Connecting to {:} from {:}", // with scid {:?}",
@@ -130,7 +128,7 @@ impl Client {
         );
 
         // Send initial message to server
-        self.send(scheduler)?;
+        socket::send(&mut self.conn, &self.src_addr_tokens, &mut self.sockets).map_err(|e| ClientError::IOFail(e));
 
         self.app_data_start = Some(std::time::Instant::now());
 
@@ -288,15 +286,27 @@ impl Client {
     }
 
     /// Generate outgoing QUIC packets and send them on the UDP socket.
-    pub fn send(&mut self, scheduler: &mut Box<dyn MultipathScheduler>) -> Result<(), ClientError> {
-        socket::send_on_socket(
-            &mut self.conn,
-            common::MAX_BUF_SIZE,
-            common::MAX_DATAGRAM_SIZE,
-            scheduler,
-            &self.src_addr_tokens,
-            &mut self.sockets,
-        )
+    pub fn send(&mut self) -> Result<(), ClientError> {
+        match &self.conn.scheduler {
+            quiche::scheduler::Scheduler::Packet(_) => {
+                socket::send_packet_scheduler(
+                    &mut self.conn,
+                    common::MAX_BUF_SIZE,
+                    common::MAX_DATAGRAM_SIZE,
+                    &self.src_addr_tokens,
+                    &mut self.sockets,
+                )
+            },
+            quiche::scheduler::Scheduler::Frame(_) => {
+                socket::send_frame_scheduler(
+                    &mut self.conn,
+                    common::MAX_BUF_SIZE,
+                    common::MAX_DATAGRAM_SIZE,
+                    &self.src_addr_tokens,
+                    &mut self.sockets,
+                )
+            },
+        }
         .map_err(|e| ClientError::IOFail(e))
     }
 
