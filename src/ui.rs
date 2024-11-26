@@ -210,11 +210,7 @@ impl<'a> UIExecutor<'a> {
     }
 
     /// Called during the test and determines if an per-second update line should be printed.
-    pub fn update(
-        &mut self,
-        conn: &quiche::Connection,
-        elapsed: Duration,
-    ) -> Result<()> {
+    pub fn update(&mut self, conn: &quiche::Connection, elapsed: Duration) -> Result<()> {
         let update_due = self.last_update.map_or(true, |v| v.elapsed() > UPDATE_FREQ);
         if !update_due || conn.is_closed() {
             return Ok(());
@@ -227,7 +223,8 @@ impl<'a> UIExecutor<'a> {
         //     SchedulingDecisions::default()
         // };
 
-        self.ui.print_update(conn, SchedulingDecisions::default(), elapsed)?;
+        self.ui
+            .print_update(conn, SchedulingDecisions::default(), elapsed)?;
 
         if conn.is_draining() && !self.draining_line_printed {
             writeln!(io::stdout(), "Connection is draining ...")?;

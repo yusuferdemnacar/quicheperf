@@ -118,9 +118,7 @@ impl Client {
         }
     }
 
-    pub fn connect(
-        &mut self,
-    ) -> Result<(), ClientError> {
+    pub fn connect(&mut self) -> Result<(), ClientError> {
         info!(
             "Connecting to {:} from {:}", // with scid {:?}",
             self.peer_addrs[0],
@@ -128,7 +126,8 @@ impl Client {
         );
 
         // Send initial message to server
-        socket::send(&mut self.conn, &self.src_addr_tokens, &mut self.sockets).map_err(|e| ClientError::IOFail(e));
+        socket::send(&mut self.conn, &self.src_addr_tokens, &mut self.sockets)
+            .map_err(|e| ClientError::IOFail(e))?;
 
         self.app_data_start = Some(std::time::Instant::now());
 
@@ -287,26 +286,13 @@ impl Client {
 
     /// Generate outgoing QUIC packets and send them on the UDP socket.
     pub fn send(&mut self) -> Result<(), ClientError> {
-        match &self.conn.scheduler {
-            quiche::scheduler::Scheduler::Packet(_) => {
-                socket::send_packet_scheduler(
-                    &mut self.conn,
-                    common::MAX_BUF_SIZE,
-                    common::MAX_DATAGRAM_SIZE,
-                    &self.src_addr_tokens,
-                    &mut self.sockets,
-                )
-            },
-            quiche::scheduler::Scheduler::Frame(_) => {
-                socket::send_frame_scheduler(
-                    &mut self.conn,
-                    common::MAX_BUF_SIZE,
-                    common::MAX_DATAGRAM_SIZE,
-                    &self.src_addr_tokens,
-                    &mut self.sockets,
-                )
-            },
-        }
+        socket::send_multipath(
+            &mut self.conn,
+            common::MAX_BUF_SIZE,
+            common::MAX_DATAGRAM_SIZE,
+            &self.src_addr_tokens,
+            &mut self.sockets,
+        )
         .map_err(|e| ClientError::IOFail(e))
     }
 

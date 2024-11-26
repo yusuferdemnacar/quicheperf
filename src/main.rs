@@ -60,7 +60,7 @@ use log4rs::config::{Appender, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log4rs::filter::threshold::ThresholdFilter;
 use perf::Perf;
-use quiche::scheduler::{self, SchedulerAlgo};
+use quiche::scheduler::{SchedulerAlgo};
 use server::{Server, ServerError};
 use std::net::SocketAddr;
 use ui::UIExecutor;
@@ -104,7 +104,9 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     config.set_disable_active_migration(false);
 
     // get_bool(--mp) -> is the flag present?
-    let implicitely_mp = !args.multipath && args.local_addrs.len() > 1 || args.pscheduler.is_some() || args.fscheduler.is_some();
+    let implicitely_mp = !args.multipath && args.local_addrs.len() > 1
+        || args.pscheduler.is_some()
+        || args.fscheduler.is_some();
     let explicitly_mp = args.multipath;
     if implicitely_mp || explicitly_mp {
         config.set_multipath(true);
@@ -556,11 +558,7 @@ fn perf_client(
         }
 
         if let Some(ref p) = protocol {
-            ui.update(
-                &client.conn,
-                p.test_duration_elapsed(),
-            )
-            .ok();
+            ui.update(&client.conn, p.test_duration_elapsed()).ok();
         }
 
         let ui_timeout = ui.timeout();
@@ -777,8 +775,7 @@ fn proxy_client(
         }
 
         if alpn_negotiated {
-            ui.update(&client.conn, start.elapsed())
-                .ok();
+            ui.update(&client.conn, start.elapsed()).ok();
         }
 
         let ui_timeout = ui.timeout();

@@ -465,26 +465,13 @@ impl Server {
             //             prev_max_send_burst, client.max_send_burst, prev_loss_rate, loss_rate);
             // }
 
-            match client.conn.scheduler {
-                quiche::scheduler::Scheduler::Packet(_) => {
-                    socket::send_packet_scheduler(
-                        &mut client.conn,
-                        client.max_send_burst,
-                        client.max_datagram_size,
-                        &self.src_addr_tokens,
-                        &mut self.sockets,
-                    )
-                },
-                quiche::scheduler::Scheduler::Frame(_) => {
-                    socket::send_frame_scheduler(
-                        &mut client.conn,
-                        client.max_send_burst,
-                        client.max_datagram_size,
-                        &self.src_addr_tokens,
-                        &mut self.sockets,
-                    )
-                },
-            }
+            socket::send_multipath(
+                &mut client.conn,
+                client.max_send_burst,
+                client.max_datagram_size,
+                &self.src_addr_tokens,
+                &mut self.sockets,
+            )
             .map_err(|e| ServerError::FatalSocket(e))?;
         }
         Ok(())

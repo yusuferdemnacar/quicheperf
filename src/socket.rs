@@ -692,7 +692,11 @@ pub fn send(
             }
 
             Err(e) => {
-                error!("{}: simple send: conn.send failed: {:?}", conn.trace_id(), e);
+                error!(
+                    "{}: simple send: conn.send failed: {:?}",
+                    conn.trace_id(),
+                    e
+                );
                 conn.close(false, 0x1, b"fail").ok();
                 // Not sure what's correct in this situation.
                 break;
@@ -706,7 +710,8 @@ pub fn send(
             Ok(sent) => trace!(
                 "{:}->{:} simple send: conn.send returned {written} bytes, sent {sent} bytes",
                 send_info.from,
-                send_info.to),
+                send_info.to
+            ),
             Err(e) => return Err(format!("simple send: send_to failed: {}", e)),
         }
     }
@@ -714,7 +719,35 @@ pub fn send(
     Ok(())
 }
 
-pub fn send_packet_scheduler(
+pub fn send_multipath(
+    conn: &mut Connection,
+    max_send_burst: usize,
+    max_datagram_size: usize,
+    src_addr_tokens: &HashMap<SocketAddr, usize>,
+    sockets: &mut Slab<SocketState>,
+) -> Result<(), String> {
+    if conn.scheduler.is_packet_algo() {
+        send_packet_scheduler(
+            conn,
+            max_send_burst,
+            max_datagram_size,
+            src_addr_tokens,
+            sockets,
+        )
+    } else if conn.scheduler.is_frame_algo() {
+        send_frame_scheduler(
+            conn,
+            max_send_burst,
+            max_datagram_size,
+            src_addr_tokens,
+            sockets,
+        )
+    } else {
+        panic!("Invalid state")
+    }
+}
+
+fn send_packet_scheduler(
     conn: &mut Connection,
     max_send_burst: usize,
     max_datagram_size: usize,
@@ -726,8 +759,7 @@ pub fn send_packet_scheduler(
         continue_write = false;
 
         let mut it = 0;
-        while let Some((local_addr, peer_addr, send_instr)) =
-            conn.packet_scheduler_mut().unwrap().get_best_path() {
+        while let Some((local_addr, peer_addr, send_instr)) = conn.get_best_path() {
             it += 1;
 
             let token = src_addr_tokens[&local_addr];
@@ -824,27 +856,20 @@ pub fn send_packet_scheduler(
     Ok(())
 }
 
-
-/// Schedules Data and Frames, generates outgoing QUIC packets and sends them on the UDP socket 
-pub fn send_frame_scheduler(
+/// Schedules Data and Frames, generates outgoing QUIC packets and sends them on the UDP socket
+fn send_frame_scheduler(
     conn: &mut Connection,
     max_send_burst: usize,
     max_datagram_size: usize,
     src_addr_tokens: &HashMap<SocketAddr, usize>,
-    sockets: &mut Slab<SocketState>)
-    -> Result<(), String> {
+    sockets: &mut Slab<SocketState>,
+) -> Result<(), String> {
     let now = Instant::now();
     // call the scheduler to schedule data and frames
-    match conn.scheduler.derive_scheduling_decision(conn, now) {
-        Ok(()) => (),
-        Err(e) => {
-            error!("scheduling failed: {:?}", e);
-            //TODO: what do i do in case the scheduling fails?
-        }
-    }
-    
+    let _ = conn.derive_scheduling_decision().map_err(|e| warn!("Scheduling failed: {e}"));
+
     // iterate over paths in RR fashion until none have packets to send
-    //let mut paths = self.local_addrs.iter().map(| s | self.conn.paths_iter(*s).map(|r| (*s,r)).collect::<VecDeque<(SocketAddr, SocketAddr)>>()).flatten().collect::<VecDeque<(SocketAddr, SocketAddr)>>(); 
+    //let mut paths = self.local_addrs.iter().map(| s | self.conn.paths_iter(*s).map(|r| (*s,r)).collect::<VecDeque<(SocketAddr, SocketAddr)>>()).flatten().collect::<VecDeque<(SocketAddr, SocketAddr)>>();
     let mut paths = conn.get_all_usable_paths();
     while let Some((pid, local_addr, recv_addr)) = paths.pop_front() {
         let socket = {
@@ -856,7 +881,10 @@ pub fn send_frame_scheduler(
             // The scheduler will probably return this same path over and over again. Break
             // to exit (potential) infinite loop. In most cases, socket.try_send() would
             // block now. We wait for a writable event.
-            trace!("outgoing packet on socket {} pending, try sending it", local_addr);
+            trace!(
+                "outgoing packet on socket {} pending, try sending it",
+                local_addr
+            );
             if let Err(e) = socket.try_send() {
                 return Err(format!("socket.try_send failed: {:?}", e));
             }
@@ -875,24 +903,18 @@ pub fn send_frame_scheduler(
         };
 
         //TODO: set has_initial
-        let (ptype, written, send_info) = match conn.get_packet_for_path(
-            buf,
-            pid,
-            false,
-            now)
-        {
+        let (ptype, written, send_info) = match conn.get_packet_for_path(buf, pid, false, now) {
             Ok(v) => v,
             Err(quiche::Error::Done) => {
                 trace!("get_packet_for_path({pid}) -> Done");
                 continue;
-            },
-            Err(e) =>
-                return Err(format!("Failed to get packet for path with error {e:?}")),
+            }
+            Err(e) => return Err(format!("Failed to get packet for path with error {e:?}")),
         };
 
         socket.buf_advance(written, &send_info, max_datagram_size);
         trace!(
-            "{:}->{:} get_packet_for_path returned {written} bytes, type={ptype:?}, max_datagram_size={max_datagram_size}",
+            "{:}->{:} get_packet_for_path({pid}) -> {written} B, type={ptype:?}, max_dgram_size={max_datagram_size} B",
             send_info.from,
             send_info.to,
         );
@@ -909,4 +931,3 @@ pub fn send_frame_scheduler(
 
     Ok(())
 }
-

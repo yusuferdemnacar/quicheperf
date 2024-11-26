@@ -1,6 +1,4 @@
 use parse_size::parse_size;
-use quiche::scheduler::FrameScheduler;
-use quiche::scheduler::PacketSchedulerAlgo;
 use quiche::PathStatus;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
@@ -114,10 +112,11 @@ pub struct Args {
     #[arg(long = "mp", global = true, default_value = "false", value_parser=parse_bool, action = ArgAction::Set, help_heading = MP_HEADING)]
     pub multipath: bool,
 
-    /// Set the multipath scheduler of this peer
+    /// Set the packet multipath scheduler of this peer
     #[arg(long, value_enum, global = true, conflicts_with = "fscheduler", help_heading = MP_HEADING)]
     pub pscheduler: Option<quiche::scheduler::PacketSchedulerAlgo>,
 
+    /// Set the frame multipath scheduler of this peer
     #[arg(long, value_enum, global = true, conflicts_with = "pscheduler", help_heading = MP_HEADING)]
     pub fscheduler: Option<quiche::scheduler::FrameSchedulerAlgo>,
 
