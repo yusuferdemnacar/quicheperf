@@ -866,7 +866,9 @@ fn send_frame_scheduler(
 ) -> Result<(), String> {
     let now = Instant::now();
     // call the scheduler to schedule data and frames
-    let _ = conn.derive_scheduling_decision().map_err(|e| warn!("Scheduling failed: {e}"));
+    let _ = conn
+        .derive_scheduling_decision()
+        .map_err(|e| warn!("Scheduling failed: {e}"));
 
     // iterate over paths in RR fashion until none have packets to send
     //let mut paths = self.local_addrs.iter().map(| s | self.conn.paths_iter(*s).map(|r| (*s,r)).collect::<VecDeque<(SocketAddr, SocketAddr)>>()).flatten().collect::<VecDeque<(SocketAddr, SocketAddr)>>();

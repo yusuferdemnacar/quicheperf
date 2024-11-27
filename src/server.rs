@@ -192,6 +192,8 @@ pub struct Server {
 
     buf: [u8; MAX_BUF_SIZE],
     out: [u8; MAX_BUF_SIZE],
+
+    prefer_path: Option<usize>,
 }
 
 impl Server {
@@ -201,6 +203,7 @@ impl Server {
         bind_to_intf: bool,
         config: quiche::Config,
         qlog_setter: common::QlogSetter,
+        prefer_path: Option<usize>,
     ) -> Result<Server, ServerError> {
         let enable_gso = true;
         let enable_pacing = true;
@@ -235,6 +238,8 @@ impl Server {
             clients: ClientMap::new(),
             buf: [0; MAX_BUF_SIZE],
             out: [0; MAX_BUF_SIZE],
+
+            prefer_path,
         })
     }
 
@@ -409,6 +414,13 @@ impl Server {
                 if let Ok(keylog) = keylog.try_clone() {
                     conn.set_keylog(Box::new(keylog));
                 }
+            }
+
+            if let Some(pid) = self.prefer_path {
+                info!("Prefer path {pid}");
+                conn.scheduler
+                    .set_preferred_path(pid)
+                    .expect("setting preferred path");
             }
 
             // Only bother with qlog if the user specified it.

@@ -60,7 +60,7 @@ use log4rs::config::{Appender, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log4rs::filter::threshold::ThresholdFilter;
 use perf::Perf;
-use quiche::scheduler::{SchedulerAlgo};
+use quiche::scheduler::SchedulerAlgo;
 use server::{Server, ServerError};
 use std::net::SocketAddr;
 use ui::UIExecutor;
@@ -435,6 +435,7 @@ fn main() -> ExitCode {
                 args.bind_to_intf,
                 quiche_config,
                 qlog_setter,
+                args.prefer_path,
             ) {
                 Ok(v) => v,
                 Err(e) => {
@@ -471,7 +472,7 @@ fn main() -> ExitCode {
 
             quiche_config.set_application_protos(&proxy::ALPN).unwrap();
 
-            let client = client::Client::new(
+            let mut client = client::Client::new(
                 local_addrs,
                 peer_addrs,
                 args.bind_to_intf,
@@ -479,6 +480,14 @@ fn main() -> ExitCode {
                 quiche_config,
             )
             .unwrap();
+
+            if let Some(pid) = args.prefer_path {
+                info!("Prefer path {pid}");
+                if let Err(_) = client.conn.scheduler.set_preferred_path(pid) {
+                    error!("Failed to set the preferred path, did you select the preferpath scheduler?");
+                    return ExitCode::FAILURE;
+                }
+            }
 
             return match proxy_client(client, tun, flow_handler, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
@@ -510,6 +519,7 @@ fn main() -> ExitCode {
                 args.bind_to_intf,
                 quiche_config,
                 qlog_setter,
+                args.prefer_path,
             ) {
                 Ok(v) => v,
                 Err(e) => {
