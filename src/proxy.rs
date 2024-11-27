@@ -212,13 +212,14 @@ impl Proxy {
                 .flows
                 .get_mut(flow_id)
                 .expect(format!("flow_id {:?} in HashSet but not in HashMap", flow_id).as_str());
-            while let Some((id, packet)) = fh.emit(now) {
+            while let Some((id, queued, packet)) = fh.emit(now) {
                 match self.queue.write(&packet) {
                     Ok(written) => trace!(
-                        "Emitted packet {:?}-{} with {}B to tun",
+                        "Emitted packet {:?}-{} with {}B after {} ms to tun",
                         flow_id,
                         id,
-                        written
+                        queued.as_millis(),
+                        written,
                     ),
                     Err(e) => error!("Failed writing to tun: {}", e),
                 }
@@ -280,7 +281,7 @@ pub trait FlowHandler {
 
     fn timeout(&self, now: Instant) -> Duration;
 
-    fn emit(&mut self, now: Instant) -> Option<(u64, Vec<u8>)>;
+    fn emit(&mut self, now: Instant) -> Option<(u64, Duration, Vec<u8>)>;
 
     fn packets_queued(&self) -> bool;
 
@@ -321,8 +322,10 @@ impl FlowHandler for NoopFlowHandler {
         }
     }
 
-    fn emit(&mut self, _now: Instant) -> Option<(u64, Vec<u8>)> {
-        self.packets.pop_front()
+    fn emit(&mut self, _now: Instant) -> Option<(u64, Duration, Vec<u8>)> {
+        self.packets
+            .pop_front()
+            .map(|(a, b)| (a, Duration::ZERO, b))
     }
 
     fn packets_queued(&self) -> bool {
@@ -345,8 +348,8 @@ struct ReorderingFlowHandler {
     // All packets up to this id have been forwarded.
     low_id: u64,
 
-    // Maps packet id to packet data and its release timeout.
-    packets: BTreeMap<u64, (Instant, Vec<u8>)>,
+    // Maps packet id to its release timestamp, receive timestamp, and packet data.
+    packets: BTreeMap<u64, (Instant, Instant, Vec<u8>)>,
 
     // The id of the next outgoing packet.
     next_send_id: u64,
@@ -379,31 +382,30 @@ impl FlowHandler for ReorderingFlowHandler {
     fn recv(&mut self, id: u64, packet: Vec<u8>, now: Instant) {
         let mut timeout = now + self.timeout;
 
-        if let Some((_, (next_timeout, _))) = self.packets.range(id..).next() {
+        if let Some((_, (next_timeout, _, _))) = self.packets.range(id..).next() {
             if *next_timeout <= timeout {
                 timeout = *next_timeout;
             }
         }
 
-        self.packets.insert(id, (timeout, packet));
+        self.packets.insert(id, (timeout, now, packet));
     }
 
     fn timeout(&self, now: Instant) -> Duration {
         match self.packets.first_key_value() {
-            Some((_, (timeout, _))) => timeout
+            Some((_, (timeout, _, _))) => timeout
                 .checked_duration_since(now)
                 .unwrap_or(Duration::ZERO),
             None => Duration::MAX,
         }
     }
 
-    fn emit(&mut self, now: Instant) -> Option<(u64, Vec<u8>)> {
-        let (id, (timeout, _packet)) = self.packets.first_key_value()?;
+    fn emit(&mut self, now: Instant) -> Option<(u64, Duration, Vec<u8>)> {
+        let (id, (timeout, _, _)) = self.packets.first_key_value()?;
 
         if now > *timeout {
             trace!(
-                "emit: {:?} until timeout; low_id would {} -> {}; {} packets queued",
-                timeout.saturating_duration_since(now),
+                "emit: timeout expired; low_id would {} -> {}; {} packets queued",
                 self.low_id,
                 id,
                 self.packets.len()
@@ -416,10 +418,9 @@ impl FlowHandler for ReorderingFlowHandler {
             if *id == self.low_id + 1 {
                 self.low_id = *id;
             }
-            return self
-                .packets
-                .pop_first()
-                .and_then(|(k, (_, v))| Some((k, v)));
+            return self.packets.pop_first().and_then(|(k, (_, received, v))| {
+                Some((k, now.saturating_duration_since(received), v))
+            });
         }
 
         None
@@ -473,14 +474,14 @@ mod tests {
         fh.recv(1, packet.clone(), now);
         fh.recv(2, packet.clone(), now);
 
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(0));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(2));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(0));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(1));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(2));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), None);
 
         fh.recv(3, packet.clone(), now);
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(3));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(3));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), None);
 
         assert!(fh.packets.is_empty())
     }
@@ -495,9 +496,9 @@ mod tests {
         fh.recv(1, packet.clone(), now);
         fh.recv(1, packet.clone(), now);
 
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(0));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(0));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(1));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), None);
 
         assert!(fh.packets.is_empty())
     }
@@ -513,14 +514,14 @@ mod tests {
         fh.recv(5, packet.clone(), now);
         fh.recv(6, packet.clone(), now);
 
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(0));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(0));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(1));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), None);
 
         let timeout = now + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(5));
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(6));
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), Some(5));
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), Some(6));
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), None);
 
         assert!(fh.packets.is_empty())
     }
@@ -536,12 +537,12 @@ mod tests {
         fh.recv(1, packet.clone(), now);
         fh.recv(2, packet.clone(), now);
 
-        assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), None);
 
         let timeout = now + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(1));
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(2));
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), Some(1));
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), Some(2));
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), None);
 
         assert!(fh.packets.is_empty())
     }
@@ -560,18 +561,18 @@ mod tests {
         let now_b = now_a + Duration::from_millis(10);
         fh.recv(8, packet.clone(), now_b);
 
-        assert_eq!(fh.emit(now_a).map(|(k, _)| k), Some(0));
-        assert_eq!(fh.emit(now_a).map(|(k, _)| k), Some(1));
-        assert_eq!(fh.emit(now_a).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(now_a).map(|(k, _, _)| k), Some(0));
+        assert_eq!(fh.emit(now_a).map(|(k, _, _)| k), Some(1));
+        assert_eq!(fh.emit(now_a).map(|(k, _, _)| k), None);
 
         let timeout_a = now_a + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
-        assert_eq!(fh.emit(timeout_a).map(|(k, _)| k), Some(5));
-        assert_eq!(fh.emit(timeout_a).map(|(k, _)| k), Some(6));
-        assert_eq!(fh.emit(timeout_a).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(timeout_a).map(|(k, _, _)| k), Some(5));
+        assert_eq!(fh.emit(timeout_a).map(|(k, _, _)| k), Some(6));
+        assert_eq!(fh.emit(timeout_a).map(|(k, _, _)| k), None);
 
         let timeout_b = now_b + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
-        assert_eq!(fh.emit(timeout_b).map(|(k, _)| k), Some(8));
-        assert_eq!(fh.emit(timeout_b).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(timeout_b).map(|(k, _, _)| k), Some(8));
+        assert_eq!(fh.emit(timeout_b).map(|(k, _, _)| k), None);
 
         assert!(fh.packets.is_empty())
     }
@@ -586,10 +587,10 @@ mod tests {
         fh.recv(2, packet.clone(), now);
         fh.recv(1, packet.clone(), now);
 
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(0));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(2));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(0));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(1));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(2));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), None);
 
         assert!(fh.packets.is_empty())
     }
@@ -605,23 +606,23 @@ mod tests {
         fh.recv(5, packet.clone(), now);
         fh.recv(6, packet.clone(), now);
 
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(0));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(0));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(1));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), None);
 
         let timeout = now + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(5));
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(6));
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), Some(5));
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), Some(6));
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), None);
 
         let late = now + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(10);
         fh.recv(3, packet.clone(), late);
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(3));
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), Some(3));
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), None);
 
         fh.recv(7, packet.clone(), late);
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(7));
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), Some(7));
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), None);
 
         assert!(fh.packets.is_empty())
     }
@@ -644,16 +645,16 @@ mod tests {
         fh.recv(4, packet.clone(), late);
 
         // Packets 0 and 1 are emitted and the timeout of packet 2 is respected
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(0));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), Some(1));
-        assert_eq!(fh.emit(now).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(0));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), Some(1));
+        assert_eq!(fh.emit(now).map(|(k, _, _)| k), None);
 
         // The packets are released after the timeout
         let timeout = now + ReorderingFlowHandler::MAX_TIMEOUT + Duration::from_millis(1);
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(4));
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(5));
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), Some(6));
-        assert_eq!(fh.emit(timeout).map(|(k, _)| k), None);
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), Some(4));
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), Some(5));
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), Some(6));
+        assert_eq!(fh.emit(timeout).map(|(k, _, _)| k), None);
 
         assert!(fh.packets.is_empty())
     }
