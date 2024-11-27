@@ -43,4 +43,4 @@ ENV RUST_LOG=info
 ENV QLOGDIR=/qlogs
 
 ENTRYPOINT [ "./docker_entrypoint.sh" ]
-CMD ["proxy-server", "--cert", "/cert.pem", "--key", "/key.pem", "--tun", "mp0", "--mp", "true", "-l", "0.0.0.0:8000"]
+CMD ["proxy-server", "--cert", "/cert.pem", "--key", "/key.pem", "--tun", "mp0", "--mp", "true", "--fscheduler", "preferpath", "-l", "0.0.0.0:8000"]
