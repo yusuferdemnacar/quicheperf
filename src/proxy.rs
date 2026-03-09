@@ -147,7 +147,7 @@ impl Proxy {
                 read,
                 conn.dgram_max_writable_len()
             );
-            if let Err(e) = conn.dgram_send(&buf[..read]) {
+            if let Err(e) = conn.dgram_send_to_flow(&buf[..read], flow_id.unwrap_or(FlowId(0)).0) {
                 match e {
                     quiche::Error::Done => (),
                     quiche::Error::BufferTooShort => error!("Trying dgram_send but {}", e),
@@ -245,14 +245,16 @@ fn map_packet_to_flow(packet: &[u8]) -> Result<Option<FlowId>, String> {
 
     let mut s = DefaultHasher::new();
 
-    match headers.net.ok_or("No net header")? {
+    let prio = match headers.net.ok_or("No net header")? {
         etherparse::NetHeaders::Ipv4(ip, _) => {
             s.write(&ip.source);
             s.write(&ip.destination);
+            ip.dscp.value() != 0
         }
         etherparse::NetHeaders::Ipv6(ip, _) => {
             s.write(&ip.source);
             s.write(&ip.destination);
+            ip.traffic_class != 0
         }
     };
 
@@ -270,8 +272,12 @@ fn map_packet_to_flow(packet: &[u8]) -> Result<Option<FlowId>, String> {
     };
 
     // TODO: parse the connection ID from QUIC packets?
+    let mut hash = s.finish() << 1;
+    if prio {
+        hash += 1;
+    }
 
-    Ok(Some(FlowId(s.finish())))
+    Ok(Some(FlowId(hash)))
 }
 
 pub trait FlowHandler {
