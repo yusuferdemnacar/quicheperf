@@ -25,6 +25,20 @@ fn parse_bitrate(s: &str) -> Result<u64, String> {
     }
 }
 
+fn parse_data_size(s: &str) -> Result<u64, String> {
+    match parse_size(s) {
+        Ok(v) => Ok(v),
+        Err(_) => Err(format!("failed parsing {}", s)),
+    }
+}
+
+fn parse_duration_seconds(s: &str) -> Result<std::time::Duration, String> {
+    match s.parse::<f64>() {
+        Ok(secs) => Ok(std::time::Duration::from_secs_f64(secs)),
+        Err(e) => Err(format!("failed to parse duration {}: {}", s, e)),
+    }
+}
+
 fn resolve_addr(s: &str) -> Result<SocketAddr, String> {
     match s.to_socket_addrs() {
         Ok(mut it) => it.next().ok_or(format!("failed to resolve {}", s)),
@@ -181,9 +195,19 @@ pub enum Subcommands {
         #[arg(short = 'c', required = true, value_parser=resolve_addr)]
         peer_addrs: Vec<SocketAddr>,
 
-        /// Time in seconds to run test for
-        #[arg(short, long, default_value = "10")]
-        duration: u64,
+        /// Time in seconds to run test for. Is exclusive with --size.
+        /// If neither --duration nor --size is specified, the default is 10s.
+        #[arg(short, long, conflicts_with = "sizes", value_parser = parse_duration_seconds)]
+        duration: Option<std::time::Duration>,
+
+        /// How much data to send on a stream. Is exclusive with --duration.
+        ///
+        /// Can either take a single argument (in which case the same number of bytes are sent on all streams)
+        /// or a list; the list must have the same number of elements as there are streams and each
+        /// list element is the number of bytes that are supposed to be sent on that stream
+        /// (identified by position). Can parse human-readable sizes, e.g. 10MB.
+        #[arg(long, value_parser=parse_data_size, num_args = 1..)]
+        sizes: Option<Vec<u64>>,
 
         /// Send data from server to client
         #[arg(short, long)]
@@ -192,6 +216,10 @@ pub enum Subcommands {
         /// Send data at the specified bitrate (can contain unit, e.g., 1MB, 1MiB, etc.)
         #[arg(short, long, value_parser=parse_bitrate)]
         bitrate: Option<u64>,
+
+        /// Specifies the number of parallel uni-directional QUIC streams to open.
+        #[arg(short, long, default_value = "1")]
+        streams: usize,
 
         /// Set the multipath status of a path: (after sec, path id, status as uint)
         /// 1 => Standby

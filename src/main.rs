@@ -46,7 +46,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::perf::TestConfig;
+use crate::perf::{PerfStream, TestConfig};
 use cli::{Args, FlowHandlerOpts};
 use client::{Client, ClientError};
 use common::PathStatusUpdater;
@@ -359,18 +359,37 @@ fn main() -> ExitCode {
     match args.commands {
         cli::Subcommands::Client {
             peer_addrs,
-            duration,
+            mut duration,
+            sizes,
+            streams,
             reverse,
             bitrate: bitrate_target,
             path_statuses,
         } => {
             if args.local_addrs.len() != peer_addrs.len() {
                 error!(
-                "Same number of local and peer addresses expected. One path will be created per pair.\n\
-                local_addrs={:?}, peer_addrs={:?}",
-                args.local_addrs, peer_addrs
-            );
+                    "Same number of local and peer addresses expected. One path will be created per pair.\n\
+                    local_addrs={:?}, peer_addrs={:?}",
+                    args.local_addrs, peer_addrs
+                );
                 return ExitCode::FAILURE;
+            }
+
+            if streams == 0 {
+                error!("--streams must be >= 1");
+                return ExitCode::FAILURE;
+            }
+
+            if duration.is_none() && sizes.is_none() {
+                duration = Some(Duration::from_secs(10));
+                debug!("Using default duration: {duration:?}");
+            } else if let Some(sizes) = &sizes {
+                if !(sizes.len() == 1) && !(sizes.len() == streams) {
+                    error!(
+                        "--sizes must have either one value or as many values as there are streams: sizes={sizes:?}"
+                    );
+                    return ExitCode::FAILURE;
+                }
             }
 
             let psu = match common::PathStatusUpdater::new(
@@ -386,13 +405,36 @@ fn main() -> ExitCode {
                 }
             };
 
+            let num_streams = 0..streams;
+            let perf_streams = num_streams
+                .into_iter()
+                .map(|idx| {
+                    let bytes_left = match &sizes {
+                        Some(v) if v.len() == 1 => Some(v[0]),
+                        Some(v) if v.len() == streams => Some(v[idx]),
+                        Some(_) => unreachable!(),
+                        None => None,
+                    };
+                    let stream_id_offset = if reverse { 3 } else { 2 };
+                    // stream 0 is for config exchange
+                    // create unidirectional streams
+                    let stream_id = stream_id_offset + idx as u64 * 4;
+                    PerfStream {
+                        stream_id,
+                        last_send: None,
+                        bytes_left,
+                    }
+                })
+                .collect();
+
             let tc = TestConfig {
                 local_addrs: local_addrs.iter().map(|s| s.to_string()).collect(),
                 peer_addrs: peer_addrs.iter().map(|s| s.to_string()).collect(),
                 password: args.password,
                 client_sending: !reverse,
-                duration: Duration::from_secs(duration),
-                bitrate_target: bitrate_target,
+                duration,
+                bitrate_target,
+                streams: perf_streams,
             };
 
             quiche_config.set_application_protos(&perf::ALPN).unwrap();
@@ -651,6 +693,8 @@ fn perf_client(
 
         client.send()?;
     }
+
+    assert!(client.conn.is_closed());
 
     client.on_close()?;
 

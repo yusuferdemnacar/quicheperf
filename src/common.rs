@@ -1,7 +1,5 @@
 use quiche::PathStatus;
 use ring::rand::SecureRandom;
-use serde::Deserialize;
-use serde::Serialize;
 use std::fs::File;
 
 use std::sync::Arc;
@@ -16,18 +14,16 @@ use zstd::stream::Encoder;
 
 use std::net::SocketAddr;
 
-use crate::perf::TestConfig;
-
 pub const MAX_BUF_SIZE: usize = 65507;
 
 pub const MAX_DATAGRAM_SIZE: usize = 1350;
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-pub struct TestMetadata {
-    pub test_config: TestConfig,
-    pub cc_algorithm: String,
-    pub version: String,
-}
+// #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+// pub struct TestMetadata {
+//     pub test_config: TestConfig,
+//     pub cc_algorithm: String,
+//     pub version: String,
+// }
 
 pub enum Protocols {
     Perf(crate::perf::Perf),

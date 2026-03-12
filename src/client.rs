@@ -1,6 +1,7 @@
 use crate::common;
 use crate::socket;
 use itertools::Itertools;
+use quiche::ConnectionError;
 use ring::rand::*;
 use slab::Slab;
 use std::collections::HashMap;
@@ -148,14 +149,14 @@ impl Client {
         if event.is_readable() {
             let local_addr = socket.socket.local_addr().unwrap();
             'read: loop {
-                let (len, from) = match socket.socket.recv_from(&mut self.recv_buf) {
+                let (read, from) = match socket.socket.recv_from(&mut self.recv_buf) {
                     Ok(v) => v,
 
                     Err(e) => {
                         // There are no more UDP packets to read on this socket.
                         // Process subsequent events.
                         if e.kind() == std::io::ErrorKind::WouldBlock {
-                            // trace!("{}: recv() would block", local_addr);
+                            trace!("{}: recv() WouldBlock", local_addr);
                             break 'read;
                         }
 
@@ -174,7 +175,7 @@ impl Client {
                 };
 
                 // Process potentially coalesced packets.
-                let _read = match self.conn.recv(&mut self.recv_buf[..len], recv_info) {
+                let _processed = match self.conn.recv(&mut self.recv_buf[..read], recv_info) {
                     Ok(v) => v,
 
                     Err(e) => {
@@ -183,7 +184,7 @@ impl Client {
                     }
                 };
 
-                // trace!("{}: processed {} bytes", local_addr, read);
+                // trace!("{from}->{local_addr}: got/processed {read}/{processed}B");
             }
         }
 
@@ -297,10 +298,14 @@ impl Client {
     }
 
     pub fn on_close(&mut self) -> Result<(), ClientError> {
+        let local_error = format_error(self.conn.local_error());
+        let peer_error = format_error(self.conn.peer_error());
         info!(
-            "connection closed, {:?} {:?}",
+            "connection closed, local={:?} peer={:?}\nconn_stats={:?}\npath_stats={:?}",
+            local_error,
+            peer_error,
             self.conn.stats(),
-            self.conn.path_stats().collect::<Vec<quiche::PathStats>>()
+            self.conn.path_stats().collect::<Vec<quiche::PathStats>>(),
         );
 
         if !self.conn.is_established() {
@@ -308,7 +313,6 @@ impl Client {
                 "connection timed out after {:?}",
                 self.app_data_start.unwrap().elapsed()
             );
-
             return Err(ClientError::HandshakeFail);
         }
 
@@ -325,9 +329,6 @@ impl Client {
 
         #[cfg(feature = "qlog")]
         {
-            // if !self.conn.qlog_writer_drained() {
-            //     println!("Waiting for the qlog event queue to be drained");
-            // }
             // Sleep until all qlog events have been written to disk
             self.conn.await_qlog_writer_drained();
         }
@@ -341,4 +342,15 @@ fn gen_scid<T: SecureRandom>(rng: &T) -> quiche::ConnectionId<'static> {
     let mut scid = [0; quiche::MAX_CONN_ID_LEN];
     rng.fill(&mut scid[..]).unwrap();
     quiche::ConnectionId::from_vec(scid.to_vec())
+}
+
+fn format_error(error: Option<&ConnectionError>) -> String {
+    match error {
+        Some(v) => {
+            let reason =
+                String::from_utf8(v.reason.clone()).unwrap_or_else(|_| format!("{:?}", v.reason));
+            format!("local error {:x}: {}", v.error_code, reason)
+        }
+        None => "None".into(),
+    }
 }
