@@ -51,21 +51,17 @@ struct PathStats {
 
 impl PathStats {
     fn update(&mut self, stats: quiche::PathStats) {
-        let mut ps = Stats::default();
-
-        ps.tput_sent = (stats.sent_bytes - self.sent_bytes) as f32 * 8.0 / 1e6;
-        ps.tput_recv = (stats.recv_bytes - self.recv_bytes) as f32 * 8.0 / 1e6;
-
-        ps.packets_sent = stats.sent - self.sent;
-        ps.packets_recv = stats.recv - self.recv;
-
-        ps.lost = stats.lost - self.lost;
-        ps.lost_spurious = stats.lost_spurious - self.lost_spurious;
-
-        ps.dgram_sent = stats.dgram_sent - self.dgram_sent;
-        ps.dgram_recv = stats.dgram_recv - self.dgram_recv;
-
-        ps.cwnd_available = stats.cwnd_available;
+        let ps = Stats {
+            tput_sent: (stats.sent_bytes - self.sent_bytes) as f32 * 8.0 / 1e6,
+            tput_recv: (stats.recv_bytes - self.recv_bytes) as f32 * 8.0 / 1e6,
+            packets_sent: stats.sent - self.sent,
+            packets_recv: stats.recv - self.recv,
+            lost: stats.lost - self.lost,
+            lost_spurious: stats.lost_spurious - self.lost_spurious,
+            dgram_sent: stats.dgram_sent - self.dgram_sent,
+            dgram_recv: stats.dgram_recv - self.dgram_recv,
+            cwnd_available: stats.cwnd_available,
+        };
 
         self.sent_bytes = stats.sent_bytes;
         self.recv_bytes = stats.recv_bytes;
@@ -141,18 +137,15 @@ impl StatsManager {
     }
 
     fn update_conn_stats(&mut self, stats: quiche::Stats) {
-        let mut cs = Stats::default();
-
-        cs.tput_sent = (stats.sent_bytes - self.sent_bytes) as f32 * 8.0 / 1e6;
-        cs.tput_recv = (stats.recv_bytes - self.recv_bytes) as f32 * 8.0 / 1e6;
-
-        cs.packets_sent = stats.sent - self.sent;
-        cs.packets_recv = stats.recv - self.recv;
-
-        cs.dgram_sent = stats.dgram_sent - self.dgram_sent;
-        cs.dgram_recv = stats.dgram_recv - self.dgram_recv;
-
-        // TODO: lost, lost_spurious
+        let cs = Stats {
+            tput_sent: (stats.sent_bytes - self.sent_bytes) as f32 * 8.0 / 1e6,
+            tput_recv: (stats.recv_bytes - self.recv_bytes) as f32 * 8.0 / 1e6,
+            packets_sent: stats.sent - self.sent,
+            packets_recv: stats.recv - self.recv,
+            dgram_sent: stats.dgram_sent - self.dgram_sent,
+            dgram_recv: stats.dgram_recv - self.dgram_recv,
+            ..Default::default() // TODO: lost, lost_spurious
+        };
 
         // Update connection-level values for next iteration
         self.sent_bytes = stats.sent_bytes;
@@ -192,7 +185,7 @@ pub struct UIExecutor<'a> {
 impl<'a> UIExecutor<'a> {
     pub fn new(ui: Box<dyn UI + 'a>) -> Self {
         Self {
-            ui: ui,
+            ui,
             last_update: None,
             draining_line_printed: false,
         }
@@ -211,7 +204,7 @@ impl<'a> UIExecutor<'a> {
 
     /// Called during the test and determines if an per-second update line should be printed.
     pub fn update(&mut self, conn: &quiche::Connection, elapsed: Duration) -> Result<()> {
-        let update_due = self.last_update.map_or(true, |v| v.elapsed() > UPDATE_FREQ);
+        let update_due = self.last_update.is_none_or(|v| v.elapsed() > UPDATE_FREQ);
         if !update_due || conn.is_closed() {
             return Ok(());
         }
@@ -452,7 +445,7 @@ impl UI for PerfUI {
         let lost_perc = (stats.lost as f64 / stats.sent as f64) * 100.0;
 
         let mut pstr = String::new();
-        for (_i, pstats) in conn.path_stats().enumerate() {
+        for pstats in conn.path_stats() {
             let ptput = match (self.client_sending, test_duration != 0.0) {
                 (true, true) => (pstats.sent_bytes as f64 / test_duration) * 8.0 / 1e6,
                 (false, true) => (pstats.recv_bytes as f64 / test_duration) * 8.0 / 1e6,

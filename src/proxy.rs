@@ -97,7 +97,7 @@ impl Proxy {
 
             // TODO: use read_vectored?
             let read = match self.queue.recv(&mut buf[8..]) {
-                Ok(read) if read == 0 => {
+                Ok(0) => {
                     trace!("Read 0B from tun");
                     break;
                 }
@@ -202,7 +202,7 @@ impl Proxy {
             } else {
                 let _written = self
                     .queue
-                    .write(&packet)
+                    .write(packet)
                     .map_err(|e| format!("Failed writing to tun: {}", e))?;
             };
         }
@@ -211,7 +211,7 @@ impl Proxy {
             let fh = self
                 .flows
                 .get_mut(flow_id)
-                .expect(format!("flow_id {:?} in HashSet but not in HashMap", flow_id).as_str());
+                .unwrap_or_else(|| panic!("flow_id {:?} in HashSet but not in HashMap", flow_id));
             while let Some((id, queued, packet)) = fh.emit(now) {
                 match self.queue.write(&packet) {
                     Ok(written) => trace!(
@@ -424,9 +424,10 @@ impl FlowHandler for ReorderingFlowHandler {
             if *id == self.low_id + 1 {
                 self.low_id = *id;
             }
-            return self.packets.pop_first().and_then(|(k, (_, received, v))| {
-                Some((k, now.saturating_duration_since(received), v))
-            });
+            return self
+                .packets
+                .pop_first()
+                .map(|(k, (_, received, v))| (k, now.saturating_duration_since(received), v));
         }
 
         None

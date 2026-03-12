@@ -2,7 +2,6 @@ use std::cmp::min;
 use std::time;
 use std::time::Duration;
 use std::time::Instant;
-use std::u64;
 
 use quiche::Connection;
 use serde::Deserialize;
@@ -10,7 +9,7 @@ use serde::Serialize;
 
 pub const ALPN: [&[u8]; 2] = [b"quicheperf", b"quicheperf-00"];
 
-pub const SEND_DATA: [u8; 65507] = [0; 65507];
+pub static SEND_DATA: [u8; 65507] = [0; 65507];
 
 const BITRATE_TIMER: Duration = Duration::from_millis(10);
 
@@ -57,8 +56,7 @@ impl PerfStream {
                 if rounds_elapsed < 1.0 {
                     0
                 } else {
-                    let send_bytes = (bytes_per_round as f64 * rounds_elapsed) as u64;
-                    send_bytes
+                    (bytes_per_round as f64 * rounds_elapsed) as u64
                 }
             }
             None => bytes_per_round,
@@ -111,13 +109,13 @@ impl Perf {
         }
     }
 
+    #[allow(clippy::unnecessary_unwrap)]
     pub fn timeout(&self) -> time::Duration {
         if self.finished_at.is_some()
             || self.tc.is_none() // Wait for tc to arrive from client
             || self.tc.as_ref().unwrap().bitrate_target.is_none() // Wait for ACKs that trigger calling dispatch
             || !self.config_sent // Wait for user
             || !self.config_acked
-        // Wait for user
         {
             // Nothing to do
             time::Duration::MAX
@@ -226,8 +224,7 @@ impl Perf {
             .unwrap()
             .streams
             .iter()
-            .find(|stream| conn.stream_capacity(stream.stream_id).is_ok())
-            .is_some();
+            .any(|stream| conn.stream_capacity(stream.stream_id).is_ok());
         if !streams_not_finished {
             debug!(
                 "Closing connection after {:?} because streams sent all data",
@@ -264,12 +261,12 @@ impl Perf {
 
             Err(e) => {
                 error!("{} stream send failed {:?}", conn.trace_id(), e);
-                return Err(From::from(e));
+                return Err(e);
             }
         };
 
         trace!("Wrote {} bytes while sending config", written);
-        if written < msg.as_bytes().len() {
+        if written < msg.len() {
             trace!("Not all bytes written, try again");
         } else {
             trace!("config_sent = true");
@@ -344,7 +341,7 @@ impl Perf {
 
                 Err(e) => {
                     error!("{} stream send failed {:?}", conn.trace_id(), e);
-                    return Err(From::from(e));
+                    return Err(e);
                 }
             };
 
@@ -432,7 +429,7 @@ impl Perf {
 
                     Err(e) => {
                         error!("{} stream send failed {:?}", conn.trace_id(), e);
-                        return Err(From::from(e));
+                        return Err(e);
                     }
                 };
 

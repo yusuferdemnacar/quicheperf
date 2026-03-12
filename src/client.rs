@@ -52,7 +52,7 @@ impl Client {
             *addrs.first().unwrap(),
             *peer_addrs.first().unwrap(),
         )
-        .map_err(|e| ClientError::Other(e))?;
+        .map_err(ClientError::Other)?;
 
         config.log_keys();
 
@@ -94,7 +94,7 @@ impl Client {
             src_addr_tokens,
             app_data_start: None,
             recv_buf: [0; 65535],
-            rng: rng,
+            rng,
 
             // consider the first path as already probed, as we established the
             // connection over it.
@@ -128,7 +128,7 @@ impl Client {
 
         // Send initial message to server
         socket::send(&mut self.conn, &self.src_addr_tokens, &mut self.sockets)
-            .map_err(|e| ClientError::IOFail(e))?;
+            .map_err(ClientError::IOFail)?;
 
         self.app_data_start = Some(std::time::Instant::now());
 
@@ -143,7 +143,7 @@ impl Client {
 
         // if event.is_writable() && socket.send_pending() {
         if socket.send_pending() {
-            socket.try_send().map_err(|e| ClientError::Other(e))?;
+            socket.try_send().map_err(ClientError::Other)?;
         }
 
         if event.is_readable() {
@@ -251,7 +251,7 @@ impl Client {
                 self.local_addrs[self.probed_paths],
                 self.peer_addrs[self.probed_paths],
             )
-            .map_err(|e| ClientError::Other(e))?;
+            .map_err(ClientError::Other)?;
 
             trace!(
                 "probed_path={}, addrs={:?}",
@@ -294,7 +294,7 @@ impl Client {
             &self.src_addr_tokens,
             &mut self.sockets,
         )
-        .map_err(|e| ClientError::IOFail(e))
+        .map_err(ClientError::IOFail)
     }
 
     pub fn on_close(&mut self) -> Result<(), ClientError> {

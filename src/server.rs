@@ -292,8 +292,8 @@ impl Server {
 
             // Parse the QUIC packet's header.
             let hdr = {
-                let mut pkt_buf = &mut self.buf[..len];
-                match quiche::Header::from_slice(&mut pkt_buf, quiche::MAX_CONN_ID_LEN) {
+                let pkt_buf = &mut self.buf[..len];
+                match quiche::Header::from_slice(pkt_buf, quiche::MAX_CONN_ID_LEN) {
                     Ok(v) => v,
                     Err(e) => {
                         return Err(ServerError::Unexpected(format!(
@@ -354,8 +354,8 @@ impl Server {
                 }
             };
 
-            let mut pkt_buf = &mut self.buf[..len];
-            client.recv(&mut pkt_buf, recv_info)?;
+            let pkt_buf = &mut self.buf[..len];
+            client.recv(pkt_buf, recv_info)?;
 
             // See whether source Connection IDs have been retired.
             while let Some(retired_scid) = client.conn.retired_scid_next() {
@@ -484,7 +484,7 @@ impl Server {
                 &self.src_addr_tokens,
                 &mut self.sockets,
             )
-            .map_err(|e| ServerError::FatalSocket(e))?;
+            .map_err(ServerError::FatalSocket)?;
         }
         Ok(())
     }
@@ -511,7 +511,7 @@ impl Server {
             .retain(|_, client_id| !closed_cids.contains(client_id));
 
         for cid in closed_cids.iter() {
-            self.clients.remove(&cid);
+            self.clients.remove(cid);
         }
 
         !closed_cids.is_empty()

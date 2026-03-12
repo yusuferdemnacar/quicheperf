@@ -583,6 +583,7 @@ impl SocketState {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn configure_local_sockets(
     local_addrs: Vec<SocketAddr>,
     pacing: bool,
@@ -781,7 +782,7 @@ fn send_packet_scheduler(
                 * max_datagram_size;
 
             let buf = match socket.buf_until(max_send_burst) {
-                Some(v) if v.len() > 0 => v,
+                Some(v) if !v.is_empty() => v,
                 _ => {
                     // None or if buffer len is 0
                     // We already wrote data up to `max_send_burst`. Send queued packets now but
@@ -896,7 +897,7 @@ fn send_frame_scheduler(
         }
 
         let buf = match socket.buf_until(max_send_burst) {
-            Some(v) if v.len() > 0 => v,
+            Some(v) if !v.is_empty() => v,
             _ => {
                 // Since we don't do GSO, this should not happen
                 warn!("Couldn't get buf_until");

@@ -25,6 +25,7 @@ pub const MAX_DATAGRAM_SIZE: usize = 1350;
 //     pub version: String,
 // }
 
+#[allow(clippy::large_enum_variant)]
 pub enum Protocols {
     Perf(crate::perf::Perf),
     // Proxy(crate::proxy::Proxy),

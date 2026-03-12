@@ -176,9 +176,9 @@ fn create_and_write(name: String, data: &[u8]) -> Result<PathBuf, String> {
     let mut path = std::env::temp_dir();
     path.push(name);
     let mut file = File::create(path.as_path())
-        .map_err(|e| format!("Failed to create {:?}: {}", path.to_str(), e.to_string()))?;
+        .map_err(|e| format!("Failed to create {:?}: {}", path.to_str(), e))?;
     file.write_all(data)
-        .map_err(|e| format!("Failed writing to {:?}: {}", path.to_str(), e.to_string()))?;
+        .map_err(|e| format!("Failed writing to {:?}: {}", path.to_str(), e))?;
     Ok(path)
 }
 
@@ -384,7 +384,7 @@ fn main() -> ExitCode {
                 duration = Some(Duration::from_secs(10));
                 debug!("Using default duration: {duration:?}");
             } else if let Some(sizes) = &sizes {
-                if !(sizes.len() == 1) && !(sizes.len() == streams) {
+                if (sizes.len() != 1) && (sizes.len() != streams) {
                     error!(
                         "--sizes must have either one value or as many values as there are streams: sizes={sizes:?}"
                     );
@@ -453,7 +453,7 @@ fn main() -> ExitCode {
                 }
             };
 
-            return match perf_client(client, tc, psu, terminate) {
+            match perf_client(client, tc, psu, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
@@ -462,7 +462,7 @@ fn main() -> ExitCode {
                 }
 
                 Ok(_) => ExitCode::SUCCESS,
-            };
+            }
         }
         cli::Subcommands::Server { cert, key, oneshot } => {
             if let Some(e) = server_set_cert(&mut quiche_config, cert, key) {
@@ -486,7 +486,7 @@ fn main() -> ExitCode {
                 }
             };
 
-            return match perf_server(server, oneshot, terminate) {
+            match perf_server(server, oneshot, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
                     error!("Fatal: {}", e);
@@ -496,7 +496,7 @@ fn main() -> ExitCode {
                     error!("Unexpected: {}", e);
                     ExitCode::FAILURE
                 }
-            };
+            }
         }
         cli::Subcommands::ProxyClient {
             peer_addrs,
@@ -525,13 +525,13 @@ fn main() -> ExitCode {
 
             if let Some(pid) = args.prefer_path {
                 info!("Prefer path {pid}");
-                if let Err(_) = client.conn.scheduler.set_preferred_path(pid) {
+                if client.conn.scheduler.set_preferred_path(pid).is_err() {
                     error!("Failed to set the preferred path, did you select the preferpath scheduler?");
                     return ExitCode::FAILURE;
                 }
             }
 
-            return match proxy_client(client, tun, flow_handler, terminate) {
+            match proxy_client(client, tun, flow_handler, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
@@ -540,7 +540,7 @@ fn main() -> ExitCode {
                 }
 
                 Ok(_) => ExitCode::SUCCESS,
-            };
+            }
         }
         cli::Subcommands::ProxyServer {
             cert,
@@ -570,7 +570,7 @@ fn main() -> ExitCode {
                 }
             };
 
-            return match proxy_server(server, tun, oneshot, flow_handler, terminate) {
+            match proxy_server(server, tun, oneshot, flow_handler, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
                     error!("Fatal: {}", e);
@@ -580,7 +580,7 @@ fn main() -> ExitCode {
                     error!("Unexpected: {}", e);
                     ExitCode::FAILURE
                 }
-            };
+            }
         }
     }
 }
@@ -718,7 +718,7 @@ fn perf_server(
     loop {
         if terminate.load(Ordering::SeqCst) {
             info!("Termination signal received, closing connection");
-            for c in server.clients.values_mut().into_iter() {
+            for c in server.clients.values_mut() {
                 c.conn.close(true, 0x1, b"user terminated").ok();
             }
             // TODO: Send out connection close messages and wait for a few seconds
@@ -740,9 +740,8 @@ fn perf_server(
         }
         let poll_duration = poll_start.elapsed();
         let conn_timeout_expired = events.is_empty()
-            && timeout.map_or(false, |t| {
-                t.saturating_sub(poll_duration) == std::time::Duration::ZERO
-            });
+            && timeout
+                .is_some_and(|t| t.saturating_sub(poll_duration) == std::time::Duration::ZERO);
         if conn_timeout_expired {
             server
                 .clients
@@ -809,8 +808,7 @@ fn proxy_client(
 
     let proxy_token = 128;
     let mut proxy_tun_drained = false;
-    let mut proxy_client =
-        proxy::Proxy::new(tun, flow_handler).map_err(|e| ClientError::IOFail(e))?;
+    let mut proxy_client = proxy::Proxy::new(tun, flow_handler).map_err(ClientError::IOFail)?;
     proxy_client.register(proxy_token, &mut poll);
 
     let keep_alive = common::KeepAlive::new(Duration::from_millis(5000));
@@ -906,10 +904,8 @@ fn proxy_client(
         }
 
         // See proxy_server()
-        if !proxy_tun_checked && !proxy_tun_drained {
-            if client.conn.is_established() {
-                proxy_tun_drained = proxy_client.forward_tun_to_conn(&mut client.conn);
-            }
+        if !proxy_tun_checked && !proxy_tun_drained && client.conn.is_established() {
+            proxy_tun_drained = proxy_client.forward_tun_to_conn(&mut client.conn);
         }
 
         if client.conn.is_closed() {
@@ -938,7 +934,7 @@ fn proxy_client(
         if alpn_negotiated {
             proxy_client
                 .forward_conn_to_tun(&mut client.conn)
-                .map_err(|e| ClientError::IOFail(e))?;
+                .map_err(ClientError::IOFail)?;
         }
 
         client.send()?;
@@ -972,13 +968,13 @@ fn proxy_server(
 
     let proxy_token = 128;
     let mut proxy_tun_drained = false;
-    let mut proxy = proxy::Proxy::new(tun, flow_handler).map_err(|e| ServerError::Unexpected(e))?;
+    let mut proxy = proxy::Proxy::new(tun, flow_handler).map_err(ServerError::Unexpected)?;
     proxy.register(proxy_token, &mut poll);
 
     loop {
         if terminate.load(Ordering::SeqCst) {
             info!("Termination signal received, closing connection");
-            for c in server.clients.values_mut().into_iter() {
+            for c in server.clients.values_mut() {
                 c.conn.close(true, 0x1, b"user terminated").ok();
             }
             // TODO: Send out connection close messages and wait for a few seconds
@@ -1021,9 +1017,8 @@ fn proxy_server(
         }
         let poll_duration = poll_start.elapsed();
         let conn_timeout_expired = events.is_empty()
-            && timeout.map_or(false, |t| {
-                t.saturating_sub(poll_duration) == std::time::Duration::ZERO
-            })
+            && timeout
+                .is_some_and(|t| t.saturating_sub(poll_duration) == std::time::Duration::ZERO)
             && wait_for_conn_timeout;
         if conn_timeout_expired {
             server
@@ -1074,7 +1069,7 @@ fn proxy_server(
                 for (_, client) in server.clients.iter_mut() {
                     proxy
                         .forward_conn_to_tun(&mut client.conn)
-                        .map_err(|e| ServerError::FatalSocket(e))?;
+                        .map_err(ServerError::FatalSocket)?;
                 }
             }
         }
