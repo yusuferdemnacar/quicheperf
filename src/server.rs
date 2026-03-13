@@ -275,7 +275,7 @@ impl Server {
         let local_addr = self.sockets[token].socket.local_addr().unwrap();
         loop {
             let socket_recv = self.sockets[token].socket.recv_from(&mut self.buf);
-            let (len, from) = match socket_recv {
+            let (read, from) = match socket_recv {
                 Ok(v) => v,
                 Err(e) => {
                     // There are no more UDP packets to read, so end the read loop
@@ -290,9 +290,11 @@ impl Server {
                 }
             };
 
+            trace!("{}->{}: read {}B from socket", from, local_addr, read);
+
             // Parse the QUIC packet's header.
             let hdr = {
-                let pkt_buf = &mut self.buf[..len];
+                let pkt_buf = &mut self.buf[..read];
                 match quiche::Header::from_slice(pkt_buf, quiche::MAX_CONN_ID_LEN) {
                     Ok(v) => v,
                     Err(e) => {
@@ -304,6 +306,7 @@ impl Server {
                 }
             };
 
+            // trace!("{from}->{local_addr}: got/processed {read}/{processed}B");
             // trace!("{:}->{:}: reveived {} bytes, {:?}", from, local_addr, len, hdr);
 
             let recv_info = quiche::RecvInfo {
@@ -354,7 +357,7 @@ impl Server {
                 }
             };
 
-            let pkt_buf = &mut self.buf[..len];
+            let pkt_buf = &mut self.buf[..read];
             client.recv(pkt_buf, recv_info)?;
 
             // See whether source Connection IDs have been retired.

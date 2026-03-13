@@ -87,7 +87,7 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
 
     // config.set_application_protos(&perf::ALPN).unwrap();
 
-    config.set_max_idle_timeout(30_000); // in ms
+    config.set_max_idle_timeout(10_000); // in ms
     config.set_max_recv_udp_payload_size(common::MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(common::MAX_DATAGRAM_SIZE);
     config.set_initial_max_data(args.max_data);

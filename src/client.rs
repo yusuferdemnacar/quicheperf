@@ -167,7 +167,7 @@ impl Client {
                     }
                 };
 
-                // trace!("{}->{}: got {} bytes", from, local_addr, len);
+                // trace!("{}->{}: got {} bytes", from, local_addr, read);
 
                 let recv_info = quiche::RecvInfo {
                     to: local_addr,
@@ -175,16 +175,16 @@ impl Client {
                 };
 
                 // Process potentially coalesced packets.
-                let _processed = match self.conn.recv(&mut self.recv_buf[..read], recv_info) {
+                let processed = match self.conn.recv(&mut self.recv_buf[..read], recv_info) {
                     Ok(v) => v,
 
                     Err(e) => {
-                        error!("{}: recv failed: {:?}", local_addr, e);
+                        error!("{}: conn.recv of {read}B failed: {:?}", local_addr, e);
                         continue 'read;
                     }
                 };
 
-                // trace!("{from}->{local_addr}: got/processed {read}/{processed}B");
+                trace!("{from}->{local_addr}: got/processed {read}/{processed}B");
             }
         }
 
