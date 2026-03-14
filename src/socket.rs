@@ -906,7 +906,8 @@ fn send_frame_scheduler(
         };
 
         //TODO: set has_initial
-        let (ptype, written, send_info) = match conn.get_packet_for_path(buf, pid, false, now) {
+        let (written, send_info) = match conn.send_scheduled_frames(buf, pid) {
+            // let (ptype, written, send_info) = match conn.get_packet_for_path(buf, pid, false, now) {
             Ok(v) => v,
             Err(quiche::Error::Done) => {
                 trace!("get_packet_for_path({pid}) -> Done");
@@ -917,7 +918,8 @@ fn send_frame_scheduler(
 
         socket.buf_advance(written, &send_info, max_datagram_size);
         trace!(
-            "{:}->{:} get_packet_for_path({pid}) -> {written} B, type={ptype:?}, max_dgram_size={max_datagram_size} B",
+            //"{:}->{:} get_packet_for_path({pid}) -> {written} B, type={ptype:?}, max_dgram_size={max_datagram_size} B",
+            "{:}->{:} get_packet_for_path({pid}) -> {written} B, max_dgram_size={max_datagram_size} B",
             send_info.from,
             send_info.to,
         );

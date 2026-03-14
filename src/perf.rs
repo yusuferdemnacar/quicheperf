@@ -79,6 +79,9 @@ pub struct Perf {
     finished_at: Option<Instant>,
 
     buf: [u8; 65535],
+    buf_config_offset: usize,
+
+    prev_streams_idx: usize,
 }
 
 impl Perf {
@@ -93,6 +96,8 @@ impl Perf {
             started_at: None,
             finished_at: None,
             buf: [0; 65535],
+            buf_config_offset: 0,
+            prev_streams_idx: 0,
         }
     }
 
@@ -106,6 +111,8 @@ impl Perf {
             started_at: None,
             finished_at: None,
             buf: [0; 65535],
+            buf_config_offset: 0,
+            prev_streams_idx: 0,
         }
     }
 
@@ -150,7 +157,9 @@ impl Perf {
                 if self.started_at.is_none() {
                     self.started_at = Some(Instant::now());
                 }
-                self.work(conn).ok();
+                if let Err(e) = self.work(conn) {
+                    error!("client_dispatch: {e}");
+                }
             }
         }
     }
@@ -164,7 +173,9 @@ impl Perf {
             //     common::qlog_metadata(&mut self.conn, tc, &self.config);
             // }
         } else {
-            self.work(conn).ok();
+            if let Err(e) = self.work(conn) {
+                error!("server_dispatch: {e}");
+            }
         }
     }
 
@@ -254,7 +265,7 @@ impl Perf {
         };
 
         let msg = serde_json::to_string(tc).unwrap();
-        let written = match conn.stream_send(0, msg.as_bytes(), false) {
+        let written = match conn.stream_send(0, msg.as_bytes(), true) {
             Ok(v) => v,
 
             Err(quiche::Error::Done) => 0,
@@ -309,11 +320,21 @@ impl Perf {
     }
 
     fn send_data(&mut self, conn: &mut Connection) -> quiche::Result<()> {
-        for streams_idx in 0..self.tc.as_ref().unwrap().streams.len() {
-            self.send_data_on_stream(conn, streams_idx)?;
+        // for streams_idx in 0..self.tc.as_ref().unwrap().streams.len() {
+        let streams_len = self.tc.as_ref().unwrap().streams.len();
+        let prev_streams_idx = self.prev_streams_idx;
+        for i in 0..streams_len {
+            self.prev_streams_idx = (prev_streams_idx + i) % streams_len;
+            match self.send_data_on_stream(conn, self.prev_streams_idx) {
+                Ok(_) => (),
+                Err(quiche::Error::Done) => break, // no more data can be queued
+                Err(e) => return Err(e),
+            };
         }
         Ok(())
     }
+
+    // TODO: look into FinalSize error: keep track of fin and don't call send dat_on_stream anymore
 
     fn send_data_on_stream(
         &mut self,
@@ -323,17 +344,18 @@ impl Perf {
         let bitrate_target = self.tc.as_ref().unwrap().bitrate_target;
         let stream = &mut self.tc.as_mut().unwrap().streams[streams_idx];
         let send_quantum = bitrate_target.map(|target| stream.bitrate_target_quantum(target));
-        let mut bytes_to_send = send_quantum.unwrap_or(SEND_DATA.len() as u64 * 1000);
+        // let mut bytes_to_send = send_quantum.unwrap_or(SEND_DATA.len() as u64 * 1000);
+        // Only queue 5 packets on a stream at once to push data to all available streams
+        let mut bytes_to_send = send_quantum.unwrap_or(conn.max_send_udp_payload_size() as u64 * 5);
 
         let mut offset = bytes_to_send;
         while offset > 0 {
+            trace!("it start stream={:?}", stream);
             // Terminate also if all bytes of the stream have been written
-            offset = min(
-                min(bytes_to_send, SEND_DATA.len() as u64),
-                stream.bytes_left.unwrap_or(u64::MAX),
-            );
+            let bytes_left = stream.bytes_left.unwrap_or(u64::MAX);
+            offset = min(min(bytes_to_send, SEND_DATA.len() as u64), bytes_left);
             let send_buf = &SEND_DATA[..offset as usize];
-            let written = match conn.stream_send(stream.stream_id, send_buf, offset == 0) {
+            let written = match conn.stream_send(stream.stream_id, send_buf, bytes_left == 0) {
                 // TODO: set fin; track how much has been sent
                 Ok(v) => v,
 
@@ -346,14 +368,15 @@ impl Perf {
             };
 
             trace!(
-                "Wrote {} bytes on stream {}, {:?} B left, fin={}",
-                written,
+                "Wrote {written}/{offset} bytes on stream {}, {:?} B left, fin={}",
                 stream.stream_id,
                 stream.bytes_left,
-                offset == 0
+                bytes_left == 0
             );
-            bytes_to_send -= written as u64;
-            stream.bytes_left = stream.bytes_left.map(|left| left - written as u64);
+            bytes_to_send = bytes_to_send.saturating_sub(written as u64);
+            stream.bytes_left = stream
+                .bytes_left
+                .map(|left| left.saturating_sub(written as u64));
         }
 
         Ok(())
@@ -380,10 +403,14 @@ impl Perf {
 
     fn recv_config(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         debug!("receiving test config");
-        let s = 0;
-        match conn.stream_recv(s, &mut self.buf) {
-            Ok((read, _fin)) => {
-                let raw_config = &self.buf[..read];
+        match conn.stream_recv(0, &mut self.buf[self.buf_config_offset..]) {
+            Ok((read, fin)) => {
+                if !fin {
+                    // Wait for the full config
+                    self.buf_config_offset = read;
+                    return Ok(());
+                }
+                let raw_config = &self.buf[..self.buf_config_offset + read];
                 debug!(
                     "Test config: {}",
                     String::from_utf8(raw_config.to_vec()).unwrap_or("decoding error".into())
@@ -422,7 +449,7 @@ impl Perf {
                 let ack = TestConfigAck { error: None };
                 let resp = serde_json::to_string(&ack).unwrap();
 
-                let written = match conn.stream_send(s, resp.as_bytes(), false) {
+                let written = match conn.stream_send(0, resp.as_bytes(), true) {
                     Ok(v) => v,
 
                     Err(quiche::Error::Done) => 0,
