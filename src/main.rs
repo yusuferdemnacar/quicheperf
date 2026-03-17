@@ -76,7 +76,7 @@ lazy_static! {
     });
 }
 
-pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
+fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     let mut config = match quiche::Config::new(quiche::PROTOCOL_VERSION) {
         Ok(v) => v,
         Err(e) => {
@@ -115,11 +115,6 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
         config.set_multipath(false);
     }
 
-    if let Some(s) = args.pscheduler {
-        config.set_multipath_scheduler(SchedulerAlgo::PacketScheduler(s));
-    } else if let Some(s) = args.fscheduler {
-        config.set_multipath_scheduler(SchedulerAlgo::FrameScheduler(s));
-    }
     // config.enable_owd();
 
     if let Ok(cwnd) = args.congestion.parse::<usize>() {
@@ -157,6 +152,16 @@ pub fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     }
 
     Ok(config)
+}
+
+fn make_scheduler_algo(args: &Args) -> Option<SchedulerAlgo> {
+    if args.pscheduler.is_some() {
+        args.pscheduler.map(SchedulerAlgo::PacketScheduler)
+    } else if args.fscheduler.is_some() {
+        args.fscheduler.map(SchedulerAlgo::FrameScheduler)
+    } else {
+        None
+    }
 }
 
 git_testament_macros!(version);
@@ -307,6 +312,8 @@ fn main() -> ExitCode {
         Err(exitcode) => return exitcode,
     };
 
+    let scheduler_algo = make_scheduler_algo(&args);
+
     let terminate = Arc::new(AtomicBool::new(false));
     let t = terminate.clone();
 
@@ -445,6 +452,7 @@ fn main() -> ExitCode {
                 args.bind_to_intf,
                 qlog_setter,
                 quiche_config,
+                scheduler_algo,
             ) {
                 Ok(v) => v,
                 Err(e) => {
@@ -477,7 +485,8 @@ fn main() -> ExitCode {
                 args.bind_to_intf,
                 quiche_config,
                 qlog_setter,
-                args.prefer_path,
+                // args.prefer_path,
+                scheduler_algo,
             ) {
                 Ok(v) => v,
                 Err(e) => {
@@ -514,22 +523,25 @@ fn main() -> ExitCode {
 
             quiche_config.set_application_protos(&proxy::ALPN).unwrap();
 
-            let mut client = client::Client::new(
+            let client = client::Client::new(
                 local_addrs,
                 peer_addrs,
                 args.bind_to_intf,
                 qlog_setter,
                 quiche_config,
+                scheduler_algo,
             )
             .unwrap();
 
-            if let Some(pid) = args.prefer_path {
-                info!("Prefer path {pid}");
-                if client.conn.scheduler.set_preferred_path(pid).is_err() {
-                    error!("Failed to set the preferred path, did you select the preferpath scheduler?");
-                    return ExitCode::FAILURE;
-                }
-            }
+            // TODO: reimplement this functionality
+            // if let Some(pid) = args.prefer_path {
+            //     if matches!(scheduler, Some(SchedulerImpl::)
+            //     info!("Prefer path {pid}");
+            //     if client.conn.scheduler.set_preferred_path(pid).is_err() {
+            //         error!("Failed to set the preferred path, did you select the preferpath scheduler?");
+            //         return ExitCode::FAILURE;
+            //     }
+            // }
 
             match proxy_client(client, tun, flow_handler, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
@@ -561,7 +573,8 @@ fn main() -> ExitCode {
                 args.bind_to_intf,
                 quiche_config,
                 qlog_setter,
-                args.prefer_path,
+                // args.prefer_path,
+                scheduler_algo,
             ) {
                 Ok(v) => v,
                 Err(e) => {

@@ -172,10 +172,8 @@ impl Perf {
             // if let Some(tc) = &protocol.tc {
             //     common::qlog_metadata(&mut self.conn, tc, &self.config);
             // }
-        } else {
-            if let Err(e) = self.work(conn) {
-                error!("server_dispatch: {e}");
-            }
+        } else if let Err(e) = self.work(conn) {
+            error!("server_dispatch: {e}");
         }
     }
 

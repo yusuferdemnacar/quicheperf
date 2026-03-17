@@ -31,6 +31,9 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::Instant;
 
+use quiche::scheduler::FrameScheduler;
+use quiche::scheduler::PacketScheduler;
+use quiche::scheduler::SchedulerImpl;
 use quiche::Connection;
 use slab::Slab;
 
@@ -722,34 +725,37 @@ pub fn send(
 
 pub fn send_multipath(
     conn: &mut Connection,
+    scheduler: Option<&mut SchedulerImpl>,
     max_send_burst: usize,
     max_datagram_size: usize,
     src_addr_tokens: &HashMap<SocketAddr, usize>,
     sockets: &mut Slab<SocketState>,
 ) -> Result<(), String> {
-    if conn.scheduler.is_packet_algo() {
-        send_packet_scheduler(
+    match scheduler {
+        Some(SchedulerImpl::Packet(scheduler)) => send_packet_scheduler(
             conn,
+            scheduler,
             max_send_burst,
             max_datagram_size,
             src_addr_tokens,
             sockets,
-        )
-    } else if conn.scheduler.is_frame_algo() {
-        send_frame_scheduler(
+        ),
+        Some(SchedulerImpl::Frame(scheduler)) => send_frame_scheduler(
             conn,
+            scheduler,
             max_send_burst,
             max_datagram_size,
             src_addr_tokens,
             sockets,
-        )
-    } else {
-        panic!("Invalid state")
+        ),
+        // TODO: implement send_non_mp and dispatch based on state of `scheduler`
+        None => send(conn, src_addr_tokens, sockets),
     }
 }
 
 fn send_packet_scheduler(
     conn: &mut Connection,
+    scheduler: &mut Box<dyn PacketScheduler>,
     max_send_burst: usize,
     max_datagram_size: usize,
     src_addr_tokens: &HashMap<SocketAddr, usize>,
@@ -760,7 +766,7 @@ fn send_packet_scheduler(
         continue_write = false;
 
         let mut it = 0;
-        while let Some((local_addr, peer_addr, send_instr)) = conn.get_best_path() {
+        while let Some((local_addr, peer_addr, send_instr)) = scheduler.get_best_path(conn) {
             it += 1;
 
             let token = src_addr_tokens[&local_addr];
@@ -860,15 +866,15 @@ fn send_packet_scheduler(
 /// Schedules Data and Frames, generates outgoing QUIC packets and sends them on the UDP socket
 fn send_frame_scheduler(
     conn: &mut Connection,
+    scheduler: &mut Box<dyn FrameScheduler>,
     max_send_burst: usize,
     max_datagram_size: usize,
     src_addr_tokens: &HashMap<SocketAddr, usize>,
     sockets: &mut Slab<SocketState>,
 ) -> Result<(), String> {
-    let now = Instant::now();
-    // call the scheduler to schedule data and frames
-    let _ = conn
-        .derive_scheduling_decision()
+    // Schedule all frames up-front
+    let _ = scheduler
+        .schedule(conn)
         .map_err(|e| warn!("Scheduling failed: {e}"));
 
     // iterate over paths in RR fashion until none have packets to send

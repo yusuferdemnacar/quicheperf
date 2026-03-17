@@ -1,6 +1,8 @@
 use crate::common;
 use crate::socket;
 use itertools::Itertools;
+use quiche::scheduler::SchedulerAlgo;
+use quiche::scheduler::SchedulerImpl;
 use quiche::ConnectionError;
 use ring::rand::*;
 use slab::Slab;
@@ -18,8 +20,8 @@ pub enum ClientError {
 pub struct Client {
     pub local_addrs: Vec<SocketAddr>,
     peer_addrs: Vec<SocketAddr>,
-
     pub conn: quiche::Connection,
+    scheduler: Option<SchedulerImpl>,
     sockets: Slab<socket::SocketState>,
     src_addr_tokens: HashMap<SocketAddr, usize>,
     app_data_start: Option<Instant>,
@@ -35,6 +37,7 @@ impl Client {
         bind_to_intf: bool,
         qlog_setter: common::QlogSetter,
         mut config: quiche::Config,
+        scheduler_algo: Option<SchedulerAlgo>,
     ) -> Result<Client, ClientError> {
         let enable_gso = true;
         let enable_pacing = true;
@@ -85,11 +88,14 @@ impl Client {
             // common::qlog_metadata(&mut conn, &tc, &config);
         }
 
+        let scheduler = scheduler_algo.map(|algo| algo.into());
+        trace!("Using scheduler {scheduler:?}");
+
         Ok(Client {
             local_addrs: addrs,
             peer_addrs,
-
             conn,
+            scheduler,
             sockets,
             src_addr_tokens,
             app_data_start: None,
@@ -289,6 +295,7 @@ impl Client {
     pub fn send(&mut self) -> Result<(), ClientError> {
         socket::send_multipath(
             &mut self.conn,
+            self.scheduler.as_mut(),
             common::MAX_BUF_SIZE,
             common::MAX_DATAGRAM_SIZE,
             &self.src_addr_tokens,

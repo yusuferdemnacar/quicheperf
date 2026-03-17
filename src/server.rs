@@ -4,6 +4,7 @@ use crate::socket::SocketState;
 use crate::{common, socket};
 
 use super::common::*;
+use quiche::scheduler::{SchedulerAlgo, SchedulerImpl};
 use quiche::RecvInfo;
 use ring::rand::*;
 use slab::Slab;
@@ -28,6 +29,7 @@ enum PacketRecvAction {
 /// Holds state of one QUIC connection.
 pub struct Client {
     pub conn: quiche::Connection,
+    scheduler: Option<SchedulerImpl>,
     client_id: ClientId,
     protocol: Option<Protocols>,
     password: Option<String>,
@@ -193,7 +195,8 @@ pub struct Server {
     buf: [u8; MAX_BUF_SIZE],
     out: [u8; MAX_BUF_SIZE],
 
-    prefer_path: Option<usize>,
+    // prefer_path: Option<usize>,
+    scheduler_algo: Option<SchedulerAlgo>,
 }
 
 impl Server {
@@ -203,7 +206,8 @@ impl Server {
         bind_to_intf: bool,
         config: quiche::Config,
         qlog_setter: common::QlogSetter,
-        prefer_path: Option<usize>,
+        // prefer_path: Option<usize>,
+        scheduler_algo: Option<SchedulerAlgo>,
     ) -> Result<Server, ServerError> {
         let enable_gso = true;
         let enable_pacing = true;
@@ -239,7 +243,8 @@ impl Server {
             buf: [0; MAX_BUF_SIZE],
             out: [0; MAX_BUF_SIZE],
 
-            prefer_path,
+            // prefer_path,
+            scheduler_algo,
         })
     }
 
@@ -419,12 +424,13 @@ impl Server {
                 }
             }
 
-            if let Some(pid) = self.prefer_path {
-                info!("Prefer path {pid}");
-                conn.scheduler
-                    .set_preferred_path(pid)
-                    .expect("setting preferred path");
-            }
+            // TODO: reenable
+            // if let Some(pid) = self.prefer_path {
+            //     info!("Prefer path {pid}");
+            //     conn.scheduler
+            //         .set_preferred_path(pid)
+            //         .expect("setting preferred path");
+            // }
 
             // Only bother with qlog if the user specified it.
             #[cfg(feature = "qlog")]
@@ -434,16 +440,15 @@ impl Server {
 
             let client_id = self.next_client_id;
 
+            let scheduler = self.scheduler_algo.map(|algo| algo.into());
+
             let client = Client {
                 conn,
+                scheduler,
                 client_id,
                 protocol: None,
                 password: self.password.clone(),
-                // partial_requests: HashMap::new(),
-                // partial_responses: HashMap::new(),
-                // siduck_conn: None,
                 max_datagram_size: MAX_DATAGRAM_SIZE,
-                // loss_rate: 0.0,
                 max_send_burst: MAX_BUF_SIZE,
             };
 
@@ -482,6 +487,7 @@ impl Server {
 
             socket::send_multipath(
                 &mut client.conn,
+                client.scheduler.as_mut(),
                 client.max_send_burst,
                 client.max_datagram_size,
                 &self.src_addr_tokens,
