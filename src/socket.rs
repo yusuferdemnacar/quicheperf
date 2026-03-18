@@ -31,7 +31,6 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::Instant;
 
-use quiche::scheduler::FrameScheduler;
 use quiche::scheduler::PacketScheduler;
 use quiche::scheduler::SchedulerImpl;
 use quiche::Connection;
@@ -725,29 +724,44 @@ pub fn send(
 
 pub fn send_multipath(
     conn: &mut Connection,
-    scheduler: Option<&mut SchedulerImpl>,
+    schedulers: Option<&mut Vec<SchedulerImpl>>,
     max_send_burst: usize,
     max_datagram_size: usize,
     src_addr_tokens: &HashMap<SocketAddr, usize>,
     sockets: &mut Slab<SocketState>,
 ) -> Result<(), String> {
-    match scheduler {
-        Some(SchedulerImpl::Packet(scheduler)) => send_packet_scheduler(
-            conn,
-            scheduler,
-            max_send_burst,
-            max_datagram_size,
-            src_addr_tokens,
-            sockets,
-        ),
-        Some(SchedulerImpl::Frame(scheduler)) => send_frame_scheduler(
-            conn,
-            scheduler,
-            max_send_burst,
-            max_datagram_size,
-            src_addr_tokens,
-            sockets,
-        ),
+    match schedulers {
+        Some(schedulers) => match schedulers.first_mut() {
+            Some(SchedulerImpl::Packet(scheduler)) => send_packet_scheduler(
+                conn,
+                scheduler,
+                max_send_burst,
+                max_datagram_size,
+                src_addr_tokens,
+                sockets,
+            ),
+            Some(SchedulerImpl::Frame(_)) => {
+                for scheduler in schedulers.iter_mut() {
+                    match scheduler {
+                        SchedulerImpl::Packet(_) => panic!("Mixed Packet and Frame schedulers"),
+                        SchedulerImpl::Frame(scheduler) => {
+                            if let Err(e) = scheduler.schedule(conn) {
+                                warn!("Scheduling failed: {e}");
+                            }
+                        }
+                    }
+                }
+
+                send_frame_scheduler(
+                    conn,
+                    max_send_burst,
+                    max_datagram_size,
+                    src_addr_tokens,
+                    sockets,
+                )
+            }
+            None => panic!("No scheduler available"),
+        },
         // TODO: implement send_non_mp and dispatch based on state of `scheduler`
         None => send(conn, src_addr_tokens, sockets),
     }
@@ -866,17 +880,12 @@ fn send_packet_scheduler(
 /// Schedules Data and Frames, generates outgoing QUIC packets and sends them on the UDP socket
 fn send_frame_scheduler(
     conn: &mut Connection,
-    scheduler: &mut Box<dyn FrameScheduler>,
+    // schedulers: &mut [Box<dyn FrameScheduler>],
     max_send_burst: usize,
     max_datagram_size: usize,
     src_addr_tokens: &HashMap<SocketAddr, usize>,
     sockets: &mut Slab<SocketState>,
 ) -> Result<(), String> {
-    // Schedule all frames up-front
-    let _ = scheduler
-        .schedule(conn)
-        .map_err(|e| warn!("Scheduling failed: {e}"));
-
     // iterate over paths in RR fashion until none have packets to send
     //let mut paths = self.local_addrs.iter().map(| s | self.conn.paths_iter(*s).map(|r| (*s,r)).collect::<VecDeque<(SocketAddr, SocketAddr)>>()).flatten().collect::<VecDeque<(SocketAddr, SocketAddr)>>();
     let mut paths = conn.get_all_usable_paths();

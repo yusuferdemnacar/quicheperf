@@ -29,7 +29,7 @@ enum PacketRecvAction {
 /// Holds state of one QUIC connection.
 pub struct Client {
     pub conn: quiche::Connection,
-    scheduler: Option<SchedulerImpl>,
+    schedulers: Option<Vec<SchedulerImpl>>,
     client_id: ClientId,
     protocol: Option<Protocols>,
     password: Option<String>,
@@ -440,11 +440,12 @@ impl Server {
 
             let client_id = self.next_client_id;
 
-            let scheduler = self.scheduler_algo.map(|algo| algo.into());
+            let schedulers = self.scheduler_algo.map(|algo| vec![algo.into()]);
+            trace!("Using schedulers {schedulers:?}");
 
             let client = Client {
                 conn,
-                scheduler,
+                schedulers,
                 client_id,
                 protocol: None,
                 password: self.password.clone(),
@@ -487,7 +488,7 @@ impl Server {
 
             socket::send_multipath(
                 &mut client.conn,
-                client.scheduler.as_mut(),
+                client.schedulers.as_mut(),
                 client.max_send_burst,
                 client.max_datagram_size,
                 &self.src_addr_tokens,

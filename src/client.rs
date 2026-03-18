@@ -21,7 +21,7 @@ pub struct Client {
     pub local_addrs: Vec<SocketAddr>,
     peer_addrs: Vec<SocketAddr>,
     pub conn: quiche::Connection,
-    scheduler: Option<SchedulerImpl>,
+    schedulers: Option<Vec<SchedulerImpl>>,
     sockets: Slab<socket::SocketState>,
     src_addr_tokens: HashMap<SocketAddr, usize>,
     app_data_start: Option<Instant>,
@@ -88,14 +88,14 @@ impl Client {
             // common::qlog_metadata(&mut conn, &tc, &config);
         }
 
-        let scheduler = scheduler_algo.map(|algo| algo.into());
-        trace!("Using scheduler {scheduler:?}");
+        let schedulers = scheduler_algo.map(|algo| vec![algo.into()]);
+        trace!("Using schedulers {schedulers:?}");
 
         Ok(Client {
             local_addrs: addrs,
             peer_addrs,
             conn,
-            scheduler,
+            schedulers,
             sockets,
             src_addr_tokens,
             app_data_start: None,
@@ -295,7 +295,7 @@ impl Client {
     pub fn send(&mut self) -> Result<(), ClientError> {
         socket::send_multipath(
             &mut self.conn,
-            self.scheduler.as_mut(),
+            self.schedulers.as_mut(),
             common::MAX_BUF_SIZE,
             common::MAX_DATAGRAM_SIZE,
             &self.src_addr_tokens,
