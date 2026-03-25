@@ -320,14 +320,22 @@ impl Perf {
     fn send_data(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         // for streams_idx in 0..self.tc.as_ref().unwrap().streams.len() {
         let streams_len = self.tc.as_ref().unwrap().streams.len();
-        let prev_streams_idx = self.prev_streams_idx;
-        for i in 0..streams_len {
-            self.prev_streams_idx = (prev_streams_idx + i) % streams_len;
-            match self.send_data_on_stream(conn, self.prev_streams_idx) {
-                Ok(_) => (),
-                Err(quiche::Error::Done) => break, // no more data can be queued
-                Err(e) => return Err(e),
-            };
+        // Write data to each stream until the connection can not buffer any more data
+        // Each call to send_data_on_stream will only queue data correponding to 5 packets.
+        // This is done to make sure that data can be queued on all streams, if we send
+        // on more than one stream
+        let mut wrote_data = true;
+        while wrote_data {
+            wrote_data = false;
+            let prev_streams_idx = self.prev_streams_idx;
+            for i in 0..streams_len {
+                self.prev_streams_idx = (prev_streams_idx + i) % streams_len;
+                match self.send_data_on_stream(conn, self.prev_streams_idx) {
+                    Ok(_) => wrote_data = true,
+                    Err(quiche::Error::Done) => continue, // no more data can be queued
+                    Err(e) => return Err(e),
+                };
+            }
         }
         Ok(())
     }
@@ -348,7 +356,6 @@ impl Perf {
 
         let mut offset = bytes_to_send;
         while offset > 0 {
-            trace!("it start stream={:?}", stream);
             // Terminate also if all bytes of the stream have been written
             let bytes_left = stream.bytes_left.unwrap_or(u64::MAX);
             offset = min(min(bytes_to_send, SEND_DATA.len() as u64), bytes_left);
@@ -357,7 +364,7 @@ impl Perf {
                 // TODO: set fin; track how much has been sent
                 Ok(v) => v,
 
-                Err(quiche::Error::Done) => break,
+                Err(quiche::Error::Done) => return Err(quiche::Error::Done),
 
                 Err(e) => {
                     error!("{} stream send failed {:?}", conn.trace_id(), e);

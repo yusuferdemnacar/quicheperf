@@ -306,7 +306,7 @@ fn send_to_gso_pacing(
     let send_time = std_time_to_u64(&tx_time);
     let cmsg_txtime = ControlMessage::TxTime(&send_time);
 
-    trace!("Pace packet (with gso) to {dest} at {until_a:?} / {until_b:?} / {send_time}");
+    // trace!("Pace packet (with gso) to {dest} at {until_a:?} / {until_b:?} / {send_time}");
 
     match sendmsg(
         sockfd,
@@ -358,7 +358,7 @@ fn sendmsg_with_pacing(
     let send_time = std_time_to_u64(&tx_time);
     let cmsg_txtime = ControlMessage::TxTime(&send_time);
 
-    trace!("Pace packet (no gso) to {dest} at {until_a:?} / {until_b:?} / {send_time}");
+    // trace!("Pace packet (no gso) to {dest} at {until_a:?} / {until_b:?} / {send_time}");
 
     match sendmsg(sockfd, &iov, &[cmsg_txtime], MsgFlags::empty(), Some(&dst)) {
         Ok(v) => Ok(v),
@@ -740,20 +740,10 @@ pub fn send_multipath(
                 src_addr_tokens,
                 sockets,
             ),
-            Some(SchedulerImpl::Frame(_)) => {
-                for scheduler in schedulers.iter_mut() {
-                    match scheduler {
-                        SchedulerImpl::Packet(_) => panic!("Mixed Packet and Frame schedulers"),
-                        SchedulerImpl::Frame(scheduler) => {
-                            if let Err(e) = scheduler.schedule(conn) {
-                                warn!("Scheduling failed: {e}");
-                            }
-                        }
-                    }
-                }
-
+            Some(SchedulerImpl::Frame(_)) | Some(SchedulerImpl::SimPacket(_)) => {
                 send_frame_scheduler(
                     conn,
+                    schedulers,
                     max_send_burst,
                     max_datagram_size,
                     src_addr_tokens,
@@ -880,12 +870,15 @@ fn send_packet_scheduler(
 /// Schedules Data and Frames, generates outgoing QUIC packets and sends them on the UDP socket
 fn send_frame_scheduler(
     conn: &mut Connection,
-    // schedulers: &mut [Box<dyn FrameScheduler>],
+    schedulers: &mut [SchedulerImpl], // must only contain Frame or PacketSim schedulers
     max_send_burst: usize,
     max_datagram_size: usize,
     src_addr_tokens: &HashMap<SocketAddr, usize>,
     sockets: &mut Slab<SocketState>,
 ) -> Result<(), String> {
+    if let Err(e) = conn.run_frame_schedulers(schedulers) {
+        return Err(format!("Failed running frame schedulers: {e}"));
+    }
     // iterate over paths in RR fashion until none have packets to send
     //let mut paths = self.local_addrs.iter().map(| s | self.conn.paths_iter(*s).map(|r| (*s,r)).collect::<VecDeque<(SocketAddr, SocketAddr)>>()).flatten().collect::<VecDeque<(SocketAddr, SocketAddr)>>();
     let mut paths = conn.get_all_usable_paths();
