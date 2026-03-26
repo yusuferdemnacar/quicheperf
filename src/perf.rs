@@ -354,14 +354,22 @@ impl Perf {
         // Only queue 5 packets on a stream at once to push data to all available streams
         let mut bytes_to_send = send_quantum.unwrap_or(conn.max_send_udp_payload_size() as u64 * 5);
 
+        // FIN already set
+        if stream.bytes_left.map(|left| left == 0).unwrap_or(false) {
+            return Err(quiche::Error::Done);
+        }
+
         let mut offset = bytes_to_send;
-        while offset > 0 {
+        while offset > 0 && stream.bytes_left.map(|left| left > 0).unwrap_or(true)  {
             // Terminate also if all bytes of the stream have been written
             let bytes_left = stream.bytes_left.unwrap_or(u64::MAX);
             offset = min(min(bytes_to_send, SEND_DATA.len() as u64), bytes_left);
             let send_buf = &SEND_DATA[..offset as usize];
-            let written = match conn.stream_send(stream.stream_id, send_buf, bytes_left == 0) {
-                // TODO: set fin; track how much has been sent
+            let fin = stream.bytes_left.map(|left| offset == left).unwrap_or(false);
+            if fin {
+                trace!("Setting fin: stream={stream:?} offset=")
+            }
+            let written = match conn.stream_send(stream.stream_id, send_buf, fin) {
                 Ok(v) => v,
 
                 Err(quiche::Error::Done) => return Err(quiche::Error::Done),
