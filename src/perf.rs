@@ -360,12 +360,15 @@ impl Perf {
         }
 
         let mut offset = bytes_to_send;
-        while offset > 0 && stream.bytes_left.map(|left| left > 0).unwrap_or(true)  {
+        while offset > 0 && stream.bytes_left.map(|left| left > 0).unwrap_or(true) {
             // Terminate also if all bytes of the stream have been written
             let bytes_left = stream.bytes_left.unwrap_or(u64::MAX);
             offset = min(min(bytes_to_send, SEND_DATA.len() as u64), bytes_left);
             let send_buf = &SEND_DATA[..offset as usize];
-            let fin = stream.bytes_left.map(|left| offset == left).unwrap_or(false);
+            let fin = stream
+                .bytes_left
+                .map(|left| offset == left)
+                .unwrap_or(false);
             if fin {
                 trace!("Setting fin: stream={stream:?} offset=")
             }

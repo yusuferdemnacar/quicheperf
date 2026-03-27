@@ -298,9 +298,9 @@ fn send_to_gso_pacing(
     // GSO option.
     let cmsg_gso = ControlMessage::UdpGsoSegments(&segment_size);
 
-    let now = std::time::Instant::now();
-    let until_a = tx_time.checked_duration_since(now);
-    let until_b = now.checked_duration_since(tx_time);
+    // let now = std::time::Instant::now();
+    // let until_a = tx_time.checked_duration_since(now);
+    // let until_b = now.checked_duration_since(tx_time);
 
     // Pacing option.
     let send_time = std_time_to_u64(&tx_time);
@@ -350,9 +350,9 @@ fn sendmsg_with_pacing(
     let dst = SockaddrStorage::from(dest);
     let sockfd = socket.as_raw_fd();
 
-    let now = std::time::Instant::now();
-    let until_a = tx_time.checked_duration_since(now);
-    let until_b = now.checked_duration_since(tx_time);
+    // let now = std::time::Instant::now();
+    // let until_a = tx_time.checked_duration_since(now);
+    // let until_b = now.checked_duration_since(tx_time);
 
     // Pacing option.
     let send_time = std_time_to_u64(&tx_time);
@@ -880,9 +880,9 @@ fn send_frame_scheduler(
         return Err(format!("Failed running frame schedulers: {e}"));
     }
     // iterate over paths in RR fashion until none have packets to send
-    //let mut paths = self.local_addrs.iter().map(| s | self.conn.paths_iter(*s).map(|r| (*s,r)).collect::<VecDeque<(SocketAddr, SocketAddr)>>()).flatten().collect::<VecDeque<(SocketAddr, SocketAddr)>>();
-    let mut paths = conn.get_all_usable_paths();
-    while let Some((pid, local_addr, recv_addr)) = paths.pop_front() {
+    // let mut paths = conn.get_all_usable_paths();
+    // while let Some((pid, local_addr, recv_addr)) = paths.pop_front() {
+    while let Ok((pid, local_addr, recv_addr)) = conn.frame_scheduler_send_path_id() {
         let socket = {
             let token = src_addr_tokens[&local_addr];
             &mut sockets[token]
@@ -914,12 +914,13 @@ fn send_frame_scheduler(
         };
 
         //TODO: set has_initial
-        let (written, send_info) = match conn.send_scheduled_frames(buf, pid) {
+        let (written, send_info) = match conn.frame_scheduler_send(buf, pid) {
             // let (ptype, written, send_info) = match conn.get_packet_for_path(buf, pid, false, now) {
             Ok(v) => v,
             Err(quiche::Error::Done) => {
                 trace!("get_packet_for_path({pid}) -> Done");
                 continue;
+                // break;
             }
             Err(e) => return Err(format!("Failed to get packet for path with error {e:?}")),
         };
@@ -937,7 +938,7 @@ fn send_frame_scheduler(
         }
 
         //append path back to end of queue
-        paths.push_back((pid, local_addr, recv_addr));
+        // paths.push_back((pid, local_addr, recv_addr));
 
         // decisions[pid] += 1;
     }
