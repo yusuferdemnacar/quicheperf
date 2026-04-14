@@ -196,7 +196,7 @@ pub struct Server {
     out: [u8; MAX_BUF_SIZE],
 
     // prefer_path: Option<usize>,
-    scheduler_algo: Option<SchedulerAlgo>,
+    scheduler_algo: Option<Vec<SchedulerAlgo>>,
 }
 
 impl Server {
@@ -207,7 +207,7 @@ impl Server {
         config: quiche::Config,
         qlog_setter: common::QlogSetter,
         // prefer_path: Option<usize>,
-        scheduler_algo: Option<SchedulerAlgo>,
+        scheduler_algo: Option<Vec<SchedulerAlgo>>,
     ) -> Result<Server, ServerError> {
         let enable_gso = true;
         let enable_pacing = true;
@@ -440,7 +440,10 @@ impl Server {
 
             let client_id = self.next_client_id;
 
-            let schedulers = self.scheduler_algo.map(|algo| vec![algo.into()]);
+            let schedulers = self
+                .scheduler_algo
+                .as_ref()
+                .map(|algos| algos.iter().map(|a| (*a).into()).collect());
             trace!("Using schedulers {schedulers:?}");
 
             let client = Client {

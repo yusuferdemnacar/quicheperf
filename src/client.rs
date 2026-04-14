@@ -37,7 +37,7 @@ impl Client {
         bind_to_intf: bool,
         qlog_setter: common::QlogSetter,
         mut config: quiche::Config,
-        scheduler_algo: Option<SchedulerAlgo>,
+        scheduler_algo: Option<Vec<SchedulerAlgo>>,
     ) -> Result<Client, ClientError> {
         let enable_gso = true;
         let enable_pacing = true;
@@ -88,7 +88,7 @@ impl Client {
             // common::qlog_metadata(&mut conn, &tc, &config);
         }
 
-        let schedulers = scheduler_algo.map(|algo| vec![algo.into()]);
+        let schedulers = scheduler_algo.map(|algos| algos.into_iter().map(|a| a.into()).collect());
         trace!("Using schedulers {schedulers:?}");
 
         Ok(Client {

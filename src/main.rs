@@ -155,14 +155,18 @@ fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     Ok(config)
 }
 
-fn make_scheduler_algo(args: &Args) -> Option<SchedulerAlgo> {
-    if args.pscheduler.is_some() {
-        args.pscheduler.map(SchedulerAlgo::PacketScheduler)
-    } else if args.fscheduler.is_some() {
-        args.fscheduler.map(SchedulerAlgo::FrameScheduler)
-    } else if args.simscheduler.is_some() {
-        args.simscheduler
-            .map(SchedulerAlgo::SimulatedPacketScheduler)
+fn make_scheduler_algo(args: &Args) -> Option<Vec<SchedulerAlgo>> {
+    if let Some(pscheduler) = args.pscheduler {
+        Some(vec![SchedulerAlgo::PacketScheduler(pscheduler)])
+    } else if let Some(fschedulers) = &args.fscheduler {
+        Some(
+            fschedulers
+                .iter()
+                .map(|fs| SchedulerAlgo::FrameScheduler(*fs))
+                .collect(),
+        )
+    } else if let Some(simscheduler) = args.simscheduler {
+        Some(vec![SchedulerAlgo::SimulatedPacketScheduler(simscheduler)])
     } else {
         None
     }

@@ -918,11 +918,11 @@ fn send_frame_scheduler(
             // let (ptype, written, send_info) = match conn.get_packet_for_path(buf, pid, false, now) {
             Ok(v) => v,
             Err(quiche::Error::Done) => {
-                trace!("get_packet_for_path({pid}) -> Done");
+                trace!("frame_scheduler_send({pid}) -> Done");
                 continue;
                 // break;
             }
-            Err(e) => return Err(format!("Failed to get packet for path with error {e:?}")),
+            Err(e) => return Err(format!("Failed frame_scheduler_send with error {e:?}")),
         };
 
         socket.buf_advance(written, &send_info, max_datagram_size);
