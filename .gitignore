@@ -1,3 +1,6 @@
 **/target
 **/*.rs.bk
 **/*.*qlog
+
+# Local dev override that redirects the quiche dep to ../quiche (see README).
+/.cargo/config.toml

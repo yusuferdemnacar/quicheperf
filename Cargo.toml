@@ -26,8 +26,8 @@ mio = { version = "0.8", features = ["net", "os-poll"] }
 url = "1"
 log = "0.4"
 ring = "0.16"
-quiche = { path = "../quiche/quiche", default-features = false, features=["boringssl-vendored"] } #  "boringssl-boring-crate"
-qlog = { path = "../quiche/qlog" }
+quiche = { git = "https://github.com/hendrikcech/quiche", default-features = false, features = ["boringssl-vendored"] }
+qlog = { git = "https://github.com/hendrikcech/quiche" }
 libc = "0.2"
 nix = { version = "0.27.1", features = ["uio", "net", "socket"] }
 slab = "0.4"

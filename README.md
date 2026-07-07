@@ -1,16 +1,67 @@
 quicheperf
 ----------
 
-QUIC performance testing tool based on [our fork of quiche](https://gitlab.lrz.de/cm/quiche), a QUIC Rust implementation from Cloudflare.
+QUIC performance testing tool based on [our fork of quiche](https://github.com/hendrikcech/quiche), a QUIC Rust implementation from Cloudflare.
 
-# Setup
-Both quiche and quicheperf need to be cloned
+# Building
+
+quicheperf is built on a custom fork of quiche, Cloudflare's QUIC implementation in Rust, hosted at [github.com/hendrikcech/quiche](https://github.com/hendrikcech/quiche) (branch `frame-scheduler`).
+`Cargo.toml` declares `quiche` and `qlog` as git dependencies of that repository, so a plain build fetches the fork from GitHub automatically; you do **not** need to clone quiche yourself:
+
 ```
-git clone --recurse-submodules git@gitlab.lrz.de:cm/quiche.git
-git clone git@gitlab.lrz.de:cm/quicheperf.git
+git clone git@github.com:hendrikcech/quicheperf.git
 cd quicheperf
-cargo build --release quicheperf
+cargo build --release      # ./target/release/quicheperf
 ```
+
+## Building against a local quiche checkout
+
+If you want to change quiche and have quicheperf pick up those changes, build against a **local** clone of quiche instead of the GitHub version.
+Clone it next to quicheperf (the paths below assume this sibling layout).
+The `--recurse-submodules` argument also pulls the vendored BoringSSL quiche dependency:
+
+```
+git clone --recurse-submodules git@github.com:hendrikcech/quiche.git
+# working-copy/
+#   quiche/       <- your checkout; may contain uncommitted changes
+#   quicheperf/
+```
+
+Your uncommitted changes in `../quiche` are picked up by both methods below.
+
+### With cargo (no Nix)
+
+Create `quicheperf/.cargo/config.toml` with a `[patch]` that redirects the quiche and qlog dependencies to your local checkout:
+
+```toml
+[patch."https://github.com/hendrikcech/quiche"]
+quiche = { path = "../quiche/quiche" }
+qlog = { path = "../quiche/qlog" }
+```
+
+Then build as usual:
+
+```
+cargo build --release
+```
+
+Cargo now compiles against `../quiche` (this file is gitignored, so it stays a local override).
+Delete it to go back to building the GitHub version.
+
+### With `nix build`
+
+`nix build` uses the GitHub quiche by default.
+To build against your local checkout instead, override the `quiche` flake input for that invocation:
+
+```
+nix build --override-input quiche 'git+file:../quiche?submodules=1'   # -> ./result/bin/quicheperf
+```
+
+Please note:
+- **New** files in quiche must be `git add`-ed to be visible (untracked files are excluded). Existing files do not need to be staged to be picked up.
+- Do **not** use `path:../quiche`: it ignores `.gitignore` and copies `target/` into the store on every build.
+
+To make the local checkout the default (no flag needed), edit the `quiche` input in `flake.nix` to `url = "git+file:../quiche?submodules=1"`.
 
 
 # Usage
