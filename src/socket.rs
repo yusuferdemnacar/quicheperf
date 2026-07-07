@@ -740,7 +740,7 @@ pub fn send_multipath(
                 src_addr_tokens,
                 sockets,
             ),
-            Some(SchedulerImpl::Frame(_)) | Some(SchedulerImpl::SimPacket(_)) => {
+            Some(SchedulerImpl::Frame(_)) => {
                 send_frame_scheduler(
                     conn,
                     schedulers,

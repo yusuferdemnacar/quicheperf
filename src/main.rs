@@ -106,8 +106,7 @@ fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     // get_bool(--mp) -> is the flag present?
     let implicitely_mp = !args.multipath && args.local_addrs.len() > 1
         || args.pscheduler.is_some()
-        || args.fscheduler.is_some()
-        || args.simscheduler.is_some();
+        || args.fscheduler.is_some();
     let explicitly_mp = args.multipath;
     if implicitely_mp || explicitly_mp {
         config.set_multipath(true);
@@ -165,8 +164,6 @@ fn make_scheduler_algo(args: &Args) -> Option<Vec<SchedulerAlgo>> {
                 .map(|fs| SchedulerAlgo::FrameScheduler(*fs))
                 .collect(),
         )
-    } else if let Some(simscheduler) = args.simscheduler {
-        Some(vec![SchedulerAlgo::SimulatedPacketScheduler(simscheduler)])
     } else {
         None
     }

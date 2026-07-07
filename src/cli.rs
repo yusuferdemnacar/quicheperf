@@ -134,10 +134,6 @@ pub struct Args {
     #[arg(long, value_enum, global = true, value_delimiter = ',', conflicts_with = "pscheduler", help_heading = MP_HEADING)]
     pub fscheduler: Option<Vec<quiche::scheduler::FrameSchedulerAlgo>>,
 
-    /// Set the frame multipath scheduler of this peer
-    #[arg(long, value_enum, global = true, conflicts_with_all = ["pscheduler", "fscheduler"], help_heading = MP_HEADING)]
-    pub simscheduler: Option<quiche::scheduler::SimulatedPacketSchedulerAlgo>,
-
     /// Prefer usage of this path
     #[arg(long, global = true, help_heading = MP_HEADING)]
     pub prefer_path: Option<usize>,
