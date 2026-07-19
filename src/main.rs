@@ -311,6 +311,7 @@ fn main() -> ExitCode {
     let args = cli::Args::parse();
 
     setup_logger(args.verbose, &args.logfile);
+    socket::init_timestamp_log();
 
     let mut quiche_config = match make_quiche_config(&args) {
         Ok(v) => v,

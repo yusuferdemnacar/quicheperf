@@ -39,6 +39,58 @@ use slab::Slab;
 use crate::common::MAX_BUF_SIZE;
 use crate::common::MAX_DATAGRAM_SIZE;
 
+static TIMESTAMP_LOG: std::sync::OnceLock<
+    std::sync::Mutex<Option<std::io::BufWriter<std::fs::File>>>,
+> = std::sync::OnceLock::new();
+
+pub fn init_timestamp_log() {
+    let log = std::env::var("TIMESTAMP_LOG").ok().and_then(|path| {
+        let path = std::path::Path::new(&path);
+        let filename = path.file_name()?.to_str()?;
+        let new_path = path.with_file_name(format!("quicheperf_{}", filename));
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&new_path)
+            .ok()
+            .map(|f| {
+                let mut w = std::io::BufWriter::new(f);
+                use std::io::Write;
+                let _ = writeln!(w, "timestamp,name,duration");
+                w
+            })
+    });
+    TIMESTAMP_LOG.set(std::sync::Mutex::new(log)).ok();
+}
+
+fn log_timestamp(record: std::fmt::Arguments) {
+    if let Some(mutex) = TIMESTAMP_LOG.get() {
+        if let Ok(ref mut guard) = mutex.lock() {
+            if let Some(ref mut f) = **guard {
+                use std::io::Write;
+                let _ = writeln!(f, "{}", record);
+            }
+        }
+    }
+}
+
+fn log_timestamp_values(
+    duration: std::time::Duration,
+    name: &str,
+    timestamp: std::time::SystemTime,
+) {
+    let unix_secs = timestamp
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    log_timestamp(format_args!(
+        "{},{},{}",
+        unix_secs,
+        name,
+        duration.as_nanos()
+    ));
+}
+
 #[cfg(target_os = "linux")]
 pub fn get_ifname_from_ip(addr: std::net::SocketAddr) -> Option<String> {
     let ifaddrs_iter = match nix::ifaddrs::getifaddrs() {
@@ -732,23 +784,49 @@ pub fn send_multipath(
 ) -> Result<(), String> {
     match schedulers {
         Some(schedulers) => match schedulers.first_mut() {
-            Some(SchedulerImpl::Packet(scheduler)) => send_packet_scheduler(
-                conn,
-                scheduler,
-                max_send_burst,
-                max_datagram_size,
-                src_addr_tokens,
-                sockets,
-            ),
+            Some(SchedulerImpl::Packet(scheduler)) => {
+                let timer = TIMESTAMP_LOG
+                    .get()
+                    .and_then(|m| m.lock().ok().and_then(|g| g.is_some().then(Instant::now)));
+                let return_value = send_packet_scheduler(
+                    conn,
+                    scheduler,
+                    max_send_burst,
+                    max_datagram_size,
+                    src_addr_tokens,
+                    sockets,
+                );
+                if let Some(start) = timer {
+                    log_timestamp_values(
+                        start.elapsed(),
+                        "send_packet_scheduler",
+                        std::time::SystemTime::now(),
+                    );
+                }
+                return_value
+            }
             Some(SchedulerImpl::Frame(_)) => {
-                send_frame_scheduler(
+                let timer = TIMESTAMP_LOG
+                    .get()
+                    .and_then(|m| m.lock().ok().and_then(|g| g.is_some().then(Instant::now)));
+                let return_value = send_frame_scheduler(
                     conn,
                     schedulers,
                     max_send_burst,
                     max_datagram_size,
                     src_addr_tokens,
                     sockets,
-                )
+                );
+
+                if let Some(start) = timer {
+                    log_timestamp_values(
+                        start.elapsed(),
+                        "send_frame_scheduler",
+                        std::time::SystemTime::now(),
+                    );
+                }
+
+                return_value
             }
             None => panic!("No scheduler available"),
         },
