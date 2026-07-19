@@ -69,6 +69,13 @@ fn log_timestamp(record: std::fmt::Arguments) {
             if let Some(ref mut f) = **guard {
                 use std::io::Write;
                 let _ = writeln!(f, "{}", record);
+                // The BufWriter lives in a `static`, which Rust never drops, so
+                // it is not flushed at exit -- and quicheperf is normally
+                // terminated by SIGINT. Without an explicit flush everything
+                // still buffered is lost: files came out empty unless the 8 KiB
+                // buffer happened to fill. Cheap here, as this logs only once
+                // per send batch, and it runs after the duration is measured.
+                let _ = f.flush();
             }
         }
     }
