@@ -745,22 +745,26 @@ fn perf_server(
         }
 
         //server.poll(&mut events)?;
-        let timeout = server
+        let conn_timeout = server
             .clients
             .values()
             .filter_map(|c| c.conn.timeout())
-            .min();
+            .min()
+            .unwrap_or(Duration::MAX);
+        // A bitrate-paced Perf sender (the server side of a reverse "-r" test) must keep waking
+        // up on its own pacing schedule, not just on quiche's loss-recovery/idle timer: once the
+        // client's own traffic quiets down, conn.timeout() alone can be seconds away.
+        let timeout = min(conn_timeout, server.perf_timeout());
         let poll_start = std::time::Instant::now();
-        if let Err(e) = poll.poll(&mut events, timeout) {
+        if let Err(e) = poll.poll(&mut events, Some(timeout)) {
             if e.kind() != std::io::ErrorKind::Interrupted {
                 error!("Poll returned error: {}", e);
                 // break;
             }
         }
         let poll_duration = poll_start.elapsed();
-        let conn_timeout_expired = events.is_empty()
-            && timeout
-                .is_some_and(|t| t.saturating_sub(poll_duration) == std::time::Duration::ZERO);
+        let conn_timeout_expired =
+            events.is_empty() && conn_timeout.saturating_sub(poll_duration) == std::time::Duration::ZERO;
         if conn_timeout_expired {
             server
                 .clients
@@ -794,6 +798,10 @@ fn perf_server(
                 }
             }
         }
+        // Unconditional, like the client loop's call to client_dispatch: a Perf sender that
+        // relies solely on socket events above would stop pacing the moment the peer's own
+        // traffic quiets down (see perf_tick's doc comment).
+        server.perf_tick();
         server.send()?;
 
         let client_collected = server.garbage_collect();

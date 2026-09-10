@@ -54,10 +54,16 @@ impl PerfStream {
                     / BITRATE_TIMER.as_micros() as f64)
                     .clamp(0.0, 3.0);
                 if rounds_elapsed < 1.0 {
-                    0
-                } else {
-                    (bytes_per_round as f64 * rounds_elapsed) as u64
+                    // Not a whole round yet, so nothing is owed. Return without touching
+                    // last_send: credit accrues against the last time data actually went out.
+                    // Updating it here would restart the round on every early call, and early
+                    // calls are the common case rather than the exception - every arriving ack
+                    // wakes the poll loop and the sender is asked again then. Discarding the
+                    // credit each time costs more the faster the test runs, because a faster
+                    // test draws more acks per round.
+                    return 0;
                 }
+                (bytes_per_round as f64 * rounds_elapsed) as u64
             }
             None => bytes_per_round,
         };
@@ -125,13 +131,26 @@ impl Perf {
         }
     }
 
+    /// How soon this `Perf` wants to run again to keep pacing its bitrate target, for whichever
+    /// peer is asking. `Duration::MAX` means "nothing to do", and the caller's poll loop is then
+    /// bounded only by the connection's own timers.
+    ///
+    /// Two of the gates are subtle and both are load-bearing:
+    ///
+    /// - `is_sending()`, not `config_sent`. A receiver has no pacing to do, and every stream's
+    ///   `last_send` stays `None` on it, which the arm below would turn into `ZERO` — a poll
+    ///   timeout of zero, i.e. a peer that never sleeps.
+    /// - `config_acked`, not `config_sent`. Only the client ever sets `config_sent`
+    ///   (`send_config` is called exclusively from `client_dispatch`), so gating on it would
+    ///   return `MAX` on every server-side `Perf` and deny the server its pacing wakeups
+    ///   entirely. `config_acked` is set on both ends, by `recv_config_ack` and `recv_config`.
     #[allow(clippy::unnecessary_unwrap)]
     pub fn timeout(&self) -> time::Duration {
         if self.finished_at.is_some()
             || self.tc.is_none() // Wait for tc to arrive from client
             || self.tc.as_ref().unwrap().bitrate_target.is_none() // Wait for ACKs that trigger calling dispatch
-            || !self.config_sent // Wait for user
             || !self.config_acked
+            || !self.is_sending()
         {
             // Nothing to do
             time::Duration::MAX
@@ -196,14 +215,27 @@ impl Perf {
         }
     }
 
+    /// Whether this peer is the one sending test data.
+    ///
+    /// It depends on the test direction and on which end of the connection this `Perf` is, and
+    /// `config_sent` is what distinguishes the ends: only the client ever sets it, because
+    /// `send_config` is called exclusively from `client_dispatch`. So a forward test sends from
+    /// the peer that sent the config, and a reverse test from the peer that did not.
+    fn is_sending(&self) -> bool {
+        match self.tc.as_ref() {
+            Some(tc) => {
+                (tc.client_sending && self.config_sent)
+                    || (!tc.client_sending && !self.config_sent)
+            }
+            None => false,
+        }
+    }
+
     fn work(&mut self, conn: &mut Connection) -> quiche::Result<()> {
         if !self.config_acked {
             return Err(quiche::Error::Done);
         }
-        let tc = self.tc.as_ref().unwrap();
-        let send_data =
-            (tc.client_sending && self.config_sent) || (!tc.client_sending && !self.config_sent);
-        if send_data {
+        if self.is_sending() {
             self.send_data(conn)
         } else {
             self.recv_data(conn)
@@ -236,10 +268,11 @@ impl Perf {
         }
 
         // let streams_not_finished = self.tc.as_ref().unwrap().streams.iter().find(|stream| stream.bytes_left.unwrap_or(u64::MAX) > 0).is_some();
-        // A stream counts as unfinished while it still has capacity, and also while it has never
-        // had any: the second case is a stream that has not been created yet, which is ahead of
-        // the transfer rather than past it. Only a stream that was seen and has since gone is
-        // done, which is what quiche leaves behind once a stream is fully consumed and dropped.
+        //
+        // conn.stream_capacity errors identically for "this stream does not exist yet" and "this
+        // stream existed and is now fully consumed", but only the second means the stream is
+        // finished. streams_seen disambiguates them: a stream that has never had capacity is still
+        // awaited, not finished, so it must not count toward closing the connection.
         let streams_not_finished = self.tc.as_ref().unwrap().streams.iter().any(|stream| {
             if conn.stream_capacity(stream.stream_id).is_ok() {
                 self.streams_seen.insert(stream.stream_id);
@@ -364,6 +397,15 @@ impl Perf {
         let bitrate_target = self.tc.as_ref().unwrap().bitrate_target;
         let stream = &mut self.tc.as_mut().unwrap().streams[streams_idx];
         let send_quantum = bitrate_target.map(|target| stream.bitrate_target_quantum(target));
+        // A zero quantum means the round's allowance is already spent, not that the stream is
+        // idle, so it has to read as "no progress". Ok(()) would tell send_data's
+        // `while wrote_data` loop the opposite, and it would call straight back in - still inside
+        // the same round, so still zero, with nothing to break the cycle but the clock. Done maps
+        // onto the loop's existing no-progress arm and yields to the poll loop, which waits out
+        // the rest of the round.
+        if send_quantum == Some(0) {
+            return Err(quiche::Error::Done);
+        }
         // let mut bytes_to_send = send_quantum.unwrap_or(SEND_DATA.len() as u64 * 1000);
         // Only queue 5 packets on a stream at once to push data to all available streams
         let mut bytes_to_send = send_quantum.unwrap_or(conn.max_send_udp_payload_size() as u64 * 5);

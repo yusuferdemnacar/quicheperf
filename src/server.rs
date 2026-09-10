@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use crate::socket::SocketState;
 use crate::{common, socket};
@@ -500,6 +501,41 @@ impl Server {
             .map_err(ServerError::FatalSocket)?;
         }
         Ok(())
+    }
+
+    /// The soonest any client's `Perf` protocol wants to run again to keep pacing a bitrate
+    /// target, independent of `quiche::Connection::timeout()` (loss recovery / idle timeout).
+    ///
+    /// `perf_server`'s poll loop must bound its wait by this in addition to the connection
+    /// timeout, or a client whose own traffic has quieted down never wakes the server up to
+    /// keep sending. That happens for every reverse ("-r") test: the client only acknowledges,
+    /// it does not send test data, so once the server's own sends stop giving it anything new
+    /// to acknowledge, nothing schedules another wakeup and the transfer stalls.
+    pub fn perf_timeout(&self) -> Duration {
+        self.clients
+            .values()
+            .filter_map(|c| match &c.protocol {
+                Some(common::Protocols::Perf(perf)) => Some(perf.timeout()),
+                _ => None,
+            })
+            .min()
+            .unwrap_or(Duration::MAX)
+    }
+
+    /// Re-drives every client's `Perf` protocol on a timer, independent of whether a packet was
+    /// actually received this iteration.
+    ///
+    /// `Client::recv` only calls `server_dispatch` in response to a socket event. The client
+    /// loop's equivalent call to `client_dispatch` runs unconditionally every iteration instead
+    /// (see the `client` subcommand's loop in main.rs), which is what lets a sender keep pacing
+    /// a bitrate target purely on `Perf::timeout()`. The server needs the same unconditional
+    /// call, paired with `perf_timeout` above, for the same reason.
+    pub fn perf_tick(&mut self) {
+        for c in self.clients.values_mut() {
+            if let Some(common::Protocols::Perf(perf)) = c.protocol.as_mut() {
+                perf.server_dispatch(&mut c.conn);
+            }
+        }
     }
 
     /// Returns true if at least one client connection was cleaned up.
