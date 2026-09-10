@@ -82,6 +82,13 @@ pub struct Perf {
     buf_config_offset: usize,
 
     prev_streams_idx: usize,
+
+    // Stream IDs close_if_finished has observed with capacity at least once. conn.stream_capacity
+    // reports the same error for "this stream does not exist yet" and "this stream is done and has
+    // been dropped from the map", and only the second means finished. A reverse ("-r") test's
+    // streams are server-initiated and absent from the client's map until the sender's first
+    // packet lands, which is one or more dispatch calls after the config is acked.
+    streams_seen: std::collections::HashSet<u64>,
 }
 
 impl Perf {
@@ -98,6 +105,7 @@ impl Perf {
             buf: [0; 65535],
             buf_config_offset: 0,
             prev_streams_idx: 0,
+            streams_seen: std::collections::HashSet::new(),
         }
     }
 
@@ -113,6 +121,7 @@ impl Perf {
             buf: [0; 65535],
             buf_config_offset: 0,
             prev_streams_idx: 0,
+            streams_seen: std::collections::HashSet::new(),
         }
     }
 
@@ -227,13 +236,18 @@ impl Perf {
         }
 
         // let streams_not_finished = self.tc.as_ref().unwrap().streams.iter().find(|stream| stream.bytes_left.unwrap_or(u64::MAX) > 0).is_some();
-        let streams_not_finished = self
-            .tc
-            .as_ref()
-            .unwrap()
-            .streams
-            .iter()
-            .any(|stream| conn.stream_capacity(stream.stream_id).is_ok());
+        // A stream counts as unfinished while it still has capacity, and also while it has never
+        // had any: the second case is a stream that has not been created yet, which is ahead of
+        // the transfer rather than past it. Only a stream that was seen and has since gone is
+        // done, which is what quiche leaves behind once a stream is fully consumed and dropped.
+        let streams_not_finished = self.tc.as_ref().unwrap().streams.iter().any(|stream| {
+            if conn.stream_capacity(stream.stream_id).is_ok() {
+                self.streams_seen.insert(stream.stream_id);
+                true
+            } else {
+                !self.streams_seen.contains(&stream.stream_id)
+            }
+        });
         if !streams_not_finished {
             debug!(
                 "Closing connection after {:?} because streams sent all data",
