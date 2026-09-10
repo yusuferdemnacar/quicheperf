@@ -36,6 +36,7 @@ mod perf;
 mod proxy;
 mod server;
 mod socket;
+mod telemetry;
 mod ui;
 
 use std::cmp::min;
@@ -602,6 +603,16 @@ fn main() -> ExitCode {
                 Ok(v) => v,
                 Err(e) => {
                     error!("Failed to set up server: {:?}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            // The RIC radio telemetry feed the cross-layer scheduler will read. Off unless
+            // --telemetry-listen is set, which is stock quicheperf behaviour.
+            let _telemetry = match telemetry::maybe_spawn(&args.telemetry, terminate.clone()) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to start telemetry receiver: {}", e);
                     return ExitCode::FAILURE;
                 }
             };

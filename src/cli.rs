@@ -186,6 +186,9 @@ pub struct Args {
     #[arg(long, global = true, default_value = "1350", value_parser = clap::value_parser!(u64).range(1200..=1350))]
     pub max_udp_payload: u64,
 
+    #[command(flatten)]
+    pub telemetry: crate::telemetry::TelemetryArgs,
+
     // --- Subcommands ---
     #[command(subcommand)]
     pub commands: Subcommands,
