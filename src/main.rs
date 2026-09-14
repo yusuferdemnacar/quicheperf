@@ -88,8 +88,8 @@ fn make_quiche_config(args: &Args) -> Result<quiche::Config, ExitCode> {
     // config.set_application_protos(&perf::ALPN).unwrap();
 
     config.set_max_idle_timeout(10_000); // in ms
-    config.set_max_recv_udp_payload_size(common::MAX_DATAGRAM_SIZE);
-    config.set_max_send_udp_payload_size(common::MAX_DATAGRAM_SIZE);
+    config.set_max_recv_udp_payload_size(args.max_udp_payload as usize);
+    config.set_max_send_udp_payload_size(args.max_udp_payload as usize);
     config.set_initial_max_data(args.max_data);
 
     config.set_initial_max_stream_data_bidi_local(args.max_stream_data);

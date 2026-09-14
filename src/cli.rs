@@ -182,6 +182,10 @@ pub struct Args {
     #[arg(long, global = true, default_value = "100", help_heading = FC_HEADING)]
     pub dgram_send_queue_len: usize,
 
+    /// Largest UDP payload to send or accept, in bytes. 1200 keeps a QUIC packet unfragmented inside the proxy tunnel.
+    #[arg(long, global = true, default_value = "1350", value_parser = clap::value_parser!(u64).range(1200..=1350))]
+    pub max_udp_payload: u64,
+
     // --- Subcommands ---
     #[command(subcommand)]
     pub commands: Subcommands,

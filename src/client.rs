@@ -293,11 +293,12 @@ impl Client {
 
     /// Generate outgoing QUIC packets and send them on the UDP socket.
     pub fn send(&mut self) -> Result<(), ClientError> {
+        let max_datagram_size = self.conn.max_send_udp_payload_size();
         socket::send_multipath(
             &mut self.conn,
             self.schedulers.as_mut(),
             common::MAX_BUF_SIZE,
-            common::MAX_DATAGRAM_SIZE,
+            max_datagram_size,
             &self.src_addr_tokens,
             &mut self.sockets,
         )
