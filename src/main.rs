@@ -407,19 +407,6 @@ fn main() -> ExitCode {
                 }
             }
 
-            let psu = match common::PathStatusUpdater::new(
-                Instant::now(),
-                local_addrs.clone(),
-                peer_addrs.clone(),
-                path_statuses,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    error!("Path status updater: {}", e);
-                    return ExitCode::FAILURE;
-                }
-            };
-
             let num_streams = 0..streams;
             let perf_streams = num_streams
                 .into_iter()
@@ -456,7 +443,7 @@ fn main() -> ExitCode {
 
             let client = match client::Client::new(
                 local_addrs,
-                peer_addrs,
+                peer_addrs.clone(),
                 args.bind_to_intf,
                 qlog_setter,
                 quiche_config,
@@ -465,6 +452,19 @@ fn main() -> ExitCode {
                 Ok(v) => v,
                 Err(e) => {
                     error!("Failed creating client: {:?}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            let psu = match common::PathStatusUpdater::new(
+                Instant::now(),
+                client.local_addrs.clone(),
+                peer_addrs,
+                path_statuses,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Path status updater: {}", e);
                     return ExitCode::FAILURE;
                 }
             };

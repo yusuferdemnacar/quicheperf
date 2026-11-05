@@ -167,6 +167,7 @@ pub struct PathStatusUpdater {
 }
 
 impl PathStatusUpdater {
+    /// `local_addrs` are the client's bound addresses, since quiche keys a path by its local address and port, and `-l <interface>` leaves the port to the kernel.
     pub fn new(
         start: Instant,
         local_addrs: Vec<SocketAddr>,
