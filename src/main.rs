@@ -31,6 +31,7 @@ extern crate serde;
 mod cli;
 mod client;
 mod common;
+mod pathlog;
 mod perf;
 mod proxy;
 mod server;
@@ -42,6 +43,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -566,6 +568,7 @@ fn main() -> ExitCode {
             tun,
             oneshot,
             flow_handler,
+            path_log,
         } => {
             if let Some(e) = server_set_cert(&mut quiche_config, cert, key) {
                 return e;
@@ -573,7 +576,7 @@ fn main() -> ExitCode {
 
             quiche_config.set_application_protos(&proxy::ALPN).unwrap();
 
-            let server = match server::Server::new(
+            let mut server = match server::Server::new(
                 local_addrs,
                 args.password,
                 args.bind_to_intf,
@@ -589,7 +592,18 @@ fn main() -> ExitCode {
                 }
             };
 
-            match proxy_server(server, tun, oneshot, flow_handler, terminate) {
+            let path_log = match pathlog::PathLog::maybe_open(&path_log) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to open the path log: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+            if let Some(log) = &path_log {
+                server.use_path_log(log.clone());
+            }
+
+            match proxy_server(server, tun, oneshot, flow_handler, path_log, terminate) {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(server::ServerError::FatalSocket(e)) => {
                     error!("Fatal: {}", e);
@@ -982,6 +996,7 @@ fn proxy_server(
     tun: String,
     oneshot: bool,
     flow_handler: FlowHandlerOpts,
+    path_log: Option<Rc<pathlog::PathLog>>,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), server::ServerError> {
     let proxy_ui = ui::ProxyUI::new();
@@ -1026,12 +1041,14 @@ fn proxy_server(
             Duration::MAX
         };
 
+        let path_log_timeout = path_log.as_ref().map_or(Duration::MAX, |log| log.timeout());
+
         let timeout = Some(min(
             min(conn_timeout.unwrap_or(max_timeout), ui_timeout),
-            proxy_timeout,
+            min(proxy_timeout, path_log_timeout),
         ));
         let wait_for_conn_timeout = if let Some(t) = conn_timeout {
-            t <= ui_timeout && t <= proxy_timeout
+            t <= ui_timeout && t <= proxy_timeout && t <= path_log_timeout
         } else {
             false
         };
@@ -1115,6 +1132,10 @@ fn proxy_server(
         }
 
         server.send()?;
+
+        if let Some(log) = &path_log {
+            log.sample(server.clients.values().map(|c| &c.conn));
+        }
 
         if let Some((key, client)) = server.clients.iter().next() {
             if *key != current_ui_client {

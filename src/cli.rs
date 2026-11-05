@@ -286,5 +286,8 @@ pub enum Subcommands {
         /// Set the multipath scheduler of this peer
         #[arg(long, value_enum, default_value = "reordering")]
         flow_handler: FlowHandlerOpts,
+
+        #[command(flatten)]
+        path_log: crate::pathlog::PathLogArgs,
     },
 }

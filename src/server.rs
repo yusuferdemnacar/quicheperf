@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::time::Duration;
 
+use crate::pathlog::PathLog;
 use crate::socket::SocketState;
 use crate::{common, socket};
 
@@ -36,6 +38,7 @@ pub struct Client {
     password: Option<String>,
     max_datagram_size: usize,
     max_send_burst: usize,
+    path_log: Option<Rc<PathLog>>,
 }
 
 impl Client {
@@ -91,6 +94,9 @@ impl Client {
 
     fn handle_path_events(&mut self) {
         while let Some(qe) = self.conn.path_event_next() {
+            if let Some(log) = &self.path_log {
+                log.event(&self.conn, &qe);
+            }
             match qe {
                 quiche::PathEvent::New(local_addr, peer_addr) => {
                     info!(
@@ -198,6 +204,7 @@ pub struct Server {
 
     // prefer_path: Option<usize>,
     scheduler_algo: Option<Vec<SchedulerAlgo>>,
+    path_log: Option<Rc<PathLog>>,
 }
 
 impl Server {
@@ -246,7 +253,13 @@ impl Server {
 
             // prefer_path,
             scheduler_algo,
+            path_log: None,
         })
+    }
+
+    /// Hand the path log to every new connection, which reports its path events to it.
+    pub fn use_path_log(&mut self, log: Rc<PathLog>) {
+        self.path_log = Some(log);
     }
 
     pub fn register(&mut self, poll: &mio::Poll) {
@@ -455,6 +468,7 @@ impl Server {
                 password: self.password.clone(),
                 max_datagram_size: MAX_DATAGRAM_SIZE,
                 max_send_burst: MAX_BUF_SIZE,
+                path_log: self.path_log.clone(),
             };
 
             self.clients.insert(client_id, client);
