@@ -519,6 +519,7 @@ fn main() -> ExitCode {
             peer_addrs,
             tun,
             flow_handler,
+            path_statuses,
         } => {
             if args.local_addrs.len() != peer_addrs.len() {
                 error!(
@@ -533,13 +534,26 @@ fn main() -> ExitCode {
 
             let client = client::Client::new(
                 local_addrs,
-                peer_addrs,
+                peer_addrs.clone(),
                 args.bind_to_intf,
                 qlog_setter,
                 quiche_config,
                 scheduler_algo,
             )
             .unwrap();
+
+            let psu = match common::PathStatusUpdater::new(
+                Instant::now(),
+                client.local_addrs.clone(),
+                peer_addrs,
+                path_statuses,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Path status updater: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
 
             // TODO: reimplement this functionality
             // if let Some(pid) = args.prefer_path {
@@ -551,7 +565,7 @@ fn main() -> ExitCode {
             //     }
             // }
 
-            match proxy_client(client, tun, flow_handler, terminate) {
+            match proxy_client(client, tun, flow_handler, psu, terminate) {
                 Err(client::ClientError::HandshakeFail) => ExitCode::FAILURE,
 
                 Err(client::ClientError::IOFail(e)) | Err(client::ClientError::Other(e)) => {
@@ -838,6 +852,7 @@ fn proxy_client(
     mut client: Client,
     tun: String,
     flow_handler: FlowHandlerOpts,
+    mut psu: PathStatusUpdater,
     terminate: Arc<AtomicBool>,
 ) -> Result<(), ClientError> {
     let proxy_ui = ui::ProxyUI::new();
@@ -966,7 +981,7 @@ fn proxy_client(
             }
         }
 
-        // psu.check(&mut client.conn);
+        psu.check(&mut client.conn);
 
         client.handle_cids();
         client.handle_path_events();

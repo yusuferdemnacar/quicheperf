@@ -262,6 +262,13 @@ pub enum Subcommands {
         /// Set the multipath scheduler of this peer
         #[arg(long, value_enum, default_value = "reordering")]
         flow_handler: FlowHandlerOpts,
+
+        /// Set the multipath status of a path: (after sec, path id, status as uint)
+        /// 1 => Standby
+        /// 2 => Available
+        /// 7 => Broken
+        #[arg(long = "status", value_parser=parse_path_status)]
+        path_statuses: Vec<(std::time::Duration, usize, PathStatus)>,
     },
 
     /// Run proxy server
